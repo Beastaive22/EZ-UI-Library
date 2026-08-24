@@ -1,7 +1,7 @@
 -- EZ key system test
 -- gate flow before the real UI loads
 
-local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/Library.lua"))()
+local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Library.lua"))()
 
 local ok = EZ:KeySystem({
     Title = "EZ",
@@ -9,7 +9,7 @@ local ok = EZ:KeySystem({
     Keys = { "EZ-2026", "let-me-in", "test-key" },
     SaveKey = "EZKeyTest.txt",
     MaxAttempts = 5,
-    GetKeyLink = "https://discord.gg/your-invite",
+    GetKeyLink = "https://discord.gg/Bba9Jct6PN",
     GetKeyText = "Get Key from Discord",
     Callback = function(success)
         if success then print("[EZ] key passed, loading UI...") end
@@ -48,7 +48,7 @@ sec:AddButton({
 sec:AddButton({
     Text = "Reload script",
     Callback = function()
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/KeySystemTest.lua"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/KeySystemTest.lua"))()
     end
 })
 

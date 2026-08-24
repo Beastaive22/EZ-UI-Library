@@ -3,7 +3,7 @@
     ~1700 icons embedded. Smart search + fuzzy match.
 
     Usage:
-        local Icons = loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/addons/Icons.lua"))()
+        local Icons = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/addons/Icons.lua"))()
 
         -- exact
         local id = Icons("sword")                       -- rbxassetid://... or nil

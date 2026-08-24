@@ -1,11 +1,11 @@
 --[[
     EZ loader - one-line entry point
     After publishing, your loadstring is:
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/loader.lua"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()
     Loads the library + every addon, builds a starter window, returns EZ.
 ]]
 
-local base = "https://raw.githubusercontent.com/YourName/YourRepo/main/"
+local base = "https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/"
 local EZ           = loadstring(game:HttpGet(base .. "Library.lua"))()
 local Icons        = loadstring(game:HttpGet(base .. "addons/Icons.lua"))()
 local SaveManager  = loadstring(game:HttpGet(base .. "addons/SaveManager.lua"))()

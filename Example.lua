@@ -1,4 +1,4 @@
-﻿--[[
+--[[
     ============================================================================
     EZ UI LIBRARY - COMPLETE GUIDED TOUR
     ============================================================================
@@ -35,7 +35,7 @@
 -- 1. LOAD
 -- One loadstring per file. Everything returns its handle directly.
 ----------------------------------------------------------------
-local repo = "https://raw.githubusercontent.com/YourName/YourRepo/main/"
+local repo = "https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/"
 
 local EZ            = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local Icons         = loadstring(game:HttpGet(repo .. "addons/Icons.lua"))()
@@ -761,7 +761,7 @@ uiSec:AddButton({
 uiSec:AddButton({
     Text = "Check for update",
     Callback = function()
-        local info = EZ:CheckForUpdate("YourName/YourRepo")
+        local info = EZ:CheckForUpdate("Beastaive22/EZ-UI-Library")
         if info then
             EZ:Notify({
                 Title = "Update",

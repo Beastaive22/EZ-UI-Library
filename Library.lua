@@ -4811,7 +4811,7 @@ end
 -- AUTO-UPDATE CHECK (fetches latest tag from github)
 -- ~~
 function EZ:CheckForUpdate(repo)
-    repo = repo or "YourName/YourRepo"
+    repo = repo or "Beastaive22/EZ-UI-Library"
     local url = "https://api.github.com/repos/" .. repo .. "/releases/latest"
     local ok, resp = pcall(function()
         if request then

@@ -14,19 +14,19 @@
 ## Install
 
 ```lua
-local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/Library.lua"))()
+local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Library.lua"))()
 ```
 
 Or run the full guided tour - a 9-tab interactive reference that demonstrates every element, window feature and addon with live callbacks:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/Example.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Example.lua"))()
 ```
 
 ## Minimal example
 
 ```lua
-local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/YourName/YourRepo/main/Library.lua"))()
+local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Library.lua"))()
 
 local Window = EZ:CreateWindow({
     Title = "My Script",
