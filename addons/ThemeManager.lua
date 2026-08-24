@@ -127,6 +127,8 @@ local BASE_THEME = copyTheme(ThemeManager.Themes.Midnight)
 
 function ThemeManager:Bind(library, opts)
     self.Library = library
+    -- register so window:AddSettingsTab() can find us
+    if library then library._themeManager = self end
 
     -- Per-brand persistence file. Every script using this library used to
     -- fight over the same workspace-root "EZTheme.txt"; give each brand its

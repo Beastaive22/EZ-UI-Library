@@ -80,6 +80,9 @@ local Window = EZ:CreateWindow({
     SubTitle = "every feature, explained",
     ToggleKey = Enum.KeyCode.RightShift,
     ToggleIcon = "sparkles",
+    -- The tour wires its own Settings tab manually below so you can see the
+    -- pieces; real scripts just let the library do it (default behaviour).
+    AutoSettings = false,
 })
 
 ----------------------------------------------------------------
@@ -864,6 +867,8 @@ end)
 
     WINDOW   :Show/:Hide/:Toggle/:Minimize/:Restore  :SetScale(s)/:GetScale
              :ToggleSidebar  :AddTab(name, icon) -> tab
+             AutoSettings=false opts out of the built-in Settings tab
+             (theme picker + configs + profiles, on by default)
              :AddDialog(id, {Title, Description, AutoDismiss, FooterButtons})
     TAB      :AddSection(name) -> sec   :AddSubTab(name) -> sub (+ :AddSection)
     SEC      AddToggle/AddSlider/AddButton/AddDropdown/AddInput/AddKeybind/

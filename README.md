@@ -63,7 +63,7 @@ Sec:AddButton({
 - **Window**: draggable (clamped on-screen), minimize-to-pill, toggle hotkey, live search filter across every element, tab badges, collapsible sidebar, mobile gestures + auto-fit sizing, UI scale 0.5x-2x
 - **Elements**: Toggle, Slider, Button, Dropdown (single/multi), Input, Keybind (Toggle/Hold modes + Ctrl/Alt/Shift modifiers), ColorPicker (+ alpha ramp), Label, Divider, Paragraph, ProgressBar, Log console, PlayerSelector (`@me` / `@random` / `@nearest`)
 - **Polish**: tooltips, conditional visibility (`VisibleWhen`), confirm dialogs with Ghost/Primary/Destructive variants, notifications with history panel, floating keybind menu, watermark with `{fps}`/`{ping}`/`{flag:id}` tokens, error handling hooks
-- **Persistence-ready**: flag system + element handles (`:Set/:Get/:OnChanged`) designed for config save/load
+- **Persistence-ready**: every window ships a **Settings tab by default** (`AutoSettings = false` to opt out) - theme picker, config save/load with autoload, profiles. Zero wiring; element handles (`:Set/:Get/:OnChanged`) power custom saves
 
 ## Addons
 

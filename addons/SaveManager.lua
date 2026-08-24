@@ -405,10 +405,13 @@ end
 
 function SaveManager:SetLibrary(library)
     self.Library = library
+    -- register so EZ:CreateWindow().AddSettingsTab() can find us
+    if library then library._saveManager = self end
 end
 
 function SaveManager:Bind(library, folder)
     self.Library = library
+    if library then library._saveManager = self end
     if folder then
         self:SetFolder(folder)
     else

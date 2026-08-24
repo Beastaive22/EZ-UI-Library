@@ -10,6 +10,11 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
+-- Release identity: powers the update checker and AutoSettings' addon fetches.
+-- Change these two lines when rebranding the library under a new repository.
+local REPO_SLUG = "Beastaive22/EZ-UI-Library"
+local REPO_RAW = "https://raw.githubusercontent.com/" .. REPO_SLUG .. "/main/"
+
 local EZ = {
     Flags = {},
     Windows = {},
@@ -24,7 +29,7 @@ local EZ = {
     _destroyed = false,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.3.0"
+    _version = "3.4.0"
 }
 
 -- defaults
@@ -959,6 +964,92 @@ function EZ:KeySystem(opts)
     -- (so caller can do `if not EZ:KeySystem(...) then return end` synchronously)
     while not passed and not locked do task.wait() end
     return passed
+end
+
+-- ~~
+-- AUTO SETTINGS
+-- Zero-wiring persistence for every window: fetches (or reuses) the
+-- ThemeManager/SaveManager addons and attaches a Settings tab with a theme
+-- picker, config save/load/autoload and profiles. Hosts opt out with
+-- CreateWindow({ AutoSettings = false }).
+-- ~~
+local function ensureAddon(name)
+    -- hosts that loadstring the addons themselves can pre-register them here,
+    -- which skips the HTTP fetch entirely
+    EZ._addonCache = EZ._addonCache or {}
+    local cached = EZ._addonCache[name]
+    if cached ~= nil then return cached or nil end
+
+    local ok, mod = pcall(function()
+        local src = game:HttpGet(REPO_RAW .. "addons/" .. name .. ".lua")
+        if not src then return nil end
+        local fn = loadstring(src)
+        return typeof(fn) == "function" and fn() or nil
+    end)
+    if not ok or not mod then
+        warn(`[EZ] AutoSettings: failed to load addon "{name}" - {tostring(mod)}`)
+        EZ._addonCache[name] = false -- don't retry every window
+        return nil
+    end
+
+    EZ._addonCache[name] = mod
+    return mod
+end
+
+local function buildAutoSettings(window)
+    local ThemeManager = ensureAddon("ThemeManager")
+    local SaveManager = ensureAddon("SaveManager")
+    if not ThemeManager or not SaveManager then return end
+
+    -- adopt existing bindings instead of rebinding over the host's choices
+    if ThemeManager.Library ~= EZ then ThemeManager:Bind(EZ) end
+    if SaveManager.Library ~= EZ then
+        SaveManager:SetLibrary(EZ)
+        SaveManager:BuildFolderTree()
+    end
+
+    ThemeManager:LoadSaved()
+    for name, tbl in EZ.Themes do
+        ThemeManager:AddTheme(name, tbl)
+    end
+
+    -- a host-built Settings tab wins; we only add autoload on top
+    for _, t in window.Tabs do
+        if t.Name == "Settings" then
+            if not EZ._autoloadRan then
+                EZ._autoloadRan = true
+                task.defer(function() SaveManager:LoadAutoloadConfig() end)
+            end
+            return
+        end
+    end
+
+    local tab = window:AddTab("Settings", "settings")
+
+    local thSec = tab:AddSection("Theme")
+    thSec:AddDropdown("_EZTheme", {
+        Text = "Active theme",
+        Values = ThemeManager:GetThemes(),
+        Default = ThemeManager.Current,
+        Callback = function(v)
+            ThemeManager:SetTheme(v)
+        end,
+    })
+
+    local cfgSec = tab:AddSection("Configs")
+    SaveManager:BuildConfigSection(cfgSec, window)
+
+    local prSec = tab:AddSection("Profiles")
+    SaveManager:BuildProfileUI(prSec, window)
+
+    -- deferred so it runs after the host finished adding its own tabs;
+    -- restoring earlier would silently skip not-yet-created elements
+    if not EZ._autoloadRan then
+        EZ._autoloadRan = true
+        task.defer(function()
+            SaveManager:LoadAutoloadConfig()
+        end)
+    end
 end
 
 function EZ:CreateWindow(opts)
@@ -2005,6 +2096,91 @@ function EZ:CreateWindow(opts)
         tween(overlay, {BackgroundTransparency = 0.45}, 0.18)
 
         return dialog
+    end
+
+    -- ~~--------
+    -- SETTINGS TAB (one-call management UI)
+    --
+    -- window:AddSettingsTab({
+    --     Title = "Settings", Icon = "settings",
+    --     Theme = true,      -- ThemeManager dropdown (needs ThemeManager:Bind)
+    --     Configs = true,    -- SaveManager config manager (needs :Bind)
+    --     Profiles = true,   -- SaveManager profiles + autoload
+    --     UI = true,         -- scale / sidebar / keybind menu / haptics
+    --     UpdateRepo = nil,  -- passed to EZ:CheckForUpdate
+    -- })
+    --
+    -- Builds from whatever addons registered themselves on :Bind(); missing
+    -- addons simply skip their section. Returns the tab so hosts can extend.
+    -- ~~--------
+    function window:AddSettingsTab(tabOpts)
+        if self._destroyed then return nil end
+        tabOpts = tabOpts or {}
+
+        local sm = EZ._saveManager
+        local tm = EZ._themeManager
+        local tab = self:AddTab(tabOpts.Title or "Settings", tabOpts.Icon or "settings")
+
+        if tm and tabOpts.Theme ~= false then
+            local thSec = tab:AddSection("Theme")
+            thSec:AddDropdown("Theme", {
+                Text = "Active theme",
+                Values = tm:GetThemes(),
+                Default = tm.Current,
+                Callback = function(v) tm:SetTheme(v) end,
+            })
+            thSec:AddLabel("Custom themes: ThemeManager:AddTheme(name, colorTable).")
+        end
+
+        if sm and tabOpts.Configs ~= false then
+            local cfgSec = tab:AddSection("Configs")
+            sm:BuildConfigSection(cfgSec, self)
+        end
+
+        if sm and tabOpts.Profiles ~= false then
+            local prSec = tab:AddSection("Profiles")
+            sm:BuildProfileUI(prSec)
+        end
+
+        if tabOpts.UI ~= false then
+            local uiSec = tab:AddSection("UI")
+            uiSec:AddSlider("UIScale", {
+                Text = "UI scale",
+                Min = 0.7, Max = 1.5, Default = uiScale.Scale, Increment = 0.05,
+                Suffix = "x",
+                Callback = function(v) self:SetScale(v) end,
+            })
+            uiSec:AddButton({
+                Text = "Toggle sidebar",
+                Callback = function() self:ToggleSidebar() end,
+            })
+            uiSec:AddButton({
+                Text = "Toggle keybind menu",
+                Callback = function() EZ:ToggleKeybindMenu() end,
+            })
+            uiSec:AddButton({
+                Text = "Haptic pulse (gamepads)",
+                Callback = function() EZ:Haptic("heavy") end,
+            })
+            uiSec:AddButton({
+                Text = "Check for update",
+                Callback = function()
+                    local info = EZ:CheckForUpdate(tabOpts.UpdateRepo)
+                    if info then
+                        EZ:Notify({
+                            Title = "Update",
+                            Content = info.outdated
+                                and ("new release: " .. info.latest)
+                                or ("up to date (" .. info.current .. ")"),
+                            Duration = 4,
+                            Type = info.outdated and "info" or "success",
+                        })
+                    end
+                end,
+            })
+        end
+
+        return tab
     end
 
     -- toggle key
@@ -4258,6 +4434,18 @@ function EZ:CreateWindow(opts)
 
     window.AddTab = owned(window.AddTab)
 
+    -- ~~--------
+    -- AUTO SETTINGS
+    -- On by default so scripts built on the library never have to think
+    -- about persistence. Pass AutoSettings = false to opt out.
+    -- ~~--------
+    if opts.AutoSettings ~= false then
+        local okAuto, errAuto = pcall(buildAutoSettings, window)
+        if not okAuto then
+            warn("[EZ] AutoSettings failed: " .. tostring(errAuto))
+        end
+    end
+
     table.insert(self.Windows, window)
     EZ._connectionOwner = previousConnectionOwner
     return window
@@ -4811,7 +4999,7 @@ end
 -- AUTO-UPDATE CHECK (fetches latest tag from github)
 -- ~~
 function EZ:CheckForUpdate(repo)
-    repo = repo or "Beastaive22/EZ-UI-Library"
+    repo = repo or REPO_SLUG
     local url = "https://api.github.com/repos/" .. repo .. "/releases/latest"
     local ok, resp = pcall(function()
         if request then
@@ -4958,6 +5146,7 @@ function EZ:Destroy()
     table.clear(self._listeners)
     table.clear(self._elements)
     self._onDestroy = nil
+    self._autoloadRan = nil
 end
 
 function EZ:OnDestroy(fn)
