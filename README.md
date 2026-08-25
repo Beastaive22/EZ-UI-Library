@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.4.0-7c5cfc" alt="version">
+  <img src="https://img.shields.io/badge/version-3.5.1-7c5cfc" alt="version">
   <img src="https://img.shields.io/badge/platform-Roblox%20executors-232323?logo=roblox" alt="platform">
   <img src="https://img.shields.io/badge/mobile-supported-46d17a" alt="mobile">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="deps">
@@ -67,10 +67,10 @@ That's the whole script — **the Settings tab (theme picker, config save/load, 
 
 | | |
 |---|---|
-| 🪟 **Windows** | Draggable (clamped on-screen), minimize-to-pill, toggle hotkey, live search filter across every element, tab badges, collapsible sidebar, mobile gestures + auto-fit, UI scale 0.5–2× |
-| 🧩 **Elements** | Toggle, Slider, Button, Dropdown (single/multi), Input, Keybind (Toggle/Hold + Ctrl/Alt/Shift), ColorPicker (+ alpha ramp), Label, Divider, Paragraph, ProgressBar, Log console, PlayerSelector (`@me` / `@random` / `@nearest`) |
-| ⚙️ **Zero-config persistence** | Settings tab ships on every window (`AutoSettings = false` to opt out): theme picker, config CRUD with confirm dialogs, **config autoload**, profiles |
-| ✨ **Polish** | Tooltips, conditional visibility (`VisibleWhen`), confirm dialogs (Ghost/Primary/Destructive), notification history bell, floating keybind menu, watermark tokens, error hooks |
+| 🪟 **Windows** | Draggable + **resizable** (geometry persists), minimize-to-**dock** (Open / Panic / Keybinds — stays where you park it), rebindable hotkey (keys or mouse buttons), live search filter, tab badges, collapsible sidebar, mobile gestures, UI scale 0.5–2×, live corner-radius + font + notification-side controls |
+| 🧩 **Elements** | Toggle, Slider, Button, Dropdown (single/multi), Input, Keybind (Toggle/Hold + Ctrl/Alt/Shift + mouse buttons M1-M3), ColorPicker (+ alpha ramp), Label, Divider, Paragraph, ProgressBar, Log console, PlayerSelector (`@me` / `@random` / `@nearest`) |
+| ⚙️ **Zero-config persistence** | Settings tab ships on every window (`AutoSettings = false` to opt out): Obsidian-style groupbox layout - Menu (keybind menu, cursor, always-on-top, notification side, DPI scale, corner radius, menu bind, unload), Themes (colour pickers, font face, background image, custom theme CRUD + JSON import/export), Configuration (config CRUD with confirm dialogs, **config autoload**) |
+| ✨ **Polish** | **Groupboxes** (symmetric two-column layout), **panic button** (universal kill switch + restore), tooltips, conditional visibility (`VisibleWhen`), confirm dialogs, notification history bell, floating keybind menu, watermark tokens, error hooks |
 | 🔑 **Key system** | Optional HWID-bound gate: SHA-256 hashed keys, saved-key bypass, attempt lockout |
 
 ## Documentation
@@ -97,7 +97,7 @@ That's the whole script — **the Settings tab (theme picker, config save/load, 
 
 ## Themes
 
-13 curated presets ship out of the box — 8 in the library (`Midnight`, `Catppuccin`, `TokyoNight`, `Dracula`, `Nord`, `Rose`, `Cyberpunk`, `Monochrome`) plus 4 more via ThemeManager (`Ocean`, `Emerald`, `Sunset`, + Midnight). Register your own in one call; switching recolours the entire UI live. Swatches: [THEME_MANAGER.md](docs/THEME_MANAGER.md).
+12 curated presets ship out of the box — 8 in the library (`Midnight`, `Catppuccin`, `TokyoNight`, `Dracula`, `Nord`, `Rose`, `Cyberpunk`, `Monochrome`) plus 4 more via ThemeManager (`Ocean`, `Rosé`, `Emerald`, `Sunset`). Register your own in one call; switching recolours the entire UI live. Swatches: [THEME_MANAGER.md](docs/THEME_MANAGER.md).
 
 ## Key system
 
@@ -113,6 +113,7 @@ if not EZ:KeySystem({
 ## Compatibility
 
 Executor environment required (`gethui`, `writefile`, etc.). Every filesystem/API call is pcall-guarded; features degrade gracefully when missing (no gamepad → haptics no-op, no crypt → key system warns and falls back).
+
 
 ## Branding checklist
 

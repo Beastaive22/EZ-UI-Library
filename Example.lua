@@ -418,10 +418,11 @@ local Binds = Window:AddTab("Binds", "keyboard")
 local kbSec = Binds:AddSection("Keybinds")
 kbSec:AddParagraph({
     Title = "section:AddKeybind(id, options)",
-    Content = "Click the combo chip, press any key. Modes: \"Toggle\" flips "
-        .. "active on each press, \"Hold\" is true while held. Modifiers "
-        .. "require Ctrl/Alt/Shift ({Ctrl=true} or {\"ctrl\"}). Saved value "
-        .. "stays a plain KeyCode in EZ.Flags - modifiers live on the handle.",
+    Content = "Click the combo chip, press any key OR mouse button (M1-M3). "
+        .. "Modes: \"Toggle\" flips active on each press, \"Hold\" is true "
+        .. "while held. Modifiers require Ctrl/Alt/Shift ({Ctrl=true} or "
+        .. "{\"ctrl\"}). Saved value stays a plain EnumItem in EZ.Flags - "
+        .. "modifiers live on the handle.",
 })
 
 kbSec:AddKeybind("AimKey", {
@@ -436,6 +437,13 @@ kbSec:AddKeybind("SprintKey", {
     Default = Enum.KeyCode.LeftShift,
     Mode = "Hold",
     Callback = function(down) print("[Tour] SprintKey down =", down) end,
+})
+
+kbSec:AddKeybind("PanicKey", {
+    Text = "Mouse button bind (M2)",
+    Default = Enum.UserInputType.MouseButton2, -- right click; M1/M3 also work
+    Mode = "Toggle",
+    Callback = function(active) print("[Tour] PanicKey active =", active) end,
 })
 
 local comboBind = kbSec:AddKeybind("ComboKey", {

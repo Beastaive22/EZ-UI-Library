@@ -28,4 +28,4 @@ NotifHistory:Bind(EZ, Window)
 - Badge shows up to `99+`; opening the panel marks everything read
 - Panel slides in flush with the window's right edge and matches the rounded corners
 - The header search bar shifts left automatically to make room for the bell (mobile collapse target stays correct)
-- Entries render with type-coloured accent bars + icons; empty state included
+- Entries render with a type-tinted icon (the accent colour identifies the type via the icon — no accent bars); empty state included

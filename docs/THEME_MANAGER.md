@@ -15,11 +15,17 @@ ThemeManager:Bind(EZ, { File = "MyHub_Theme.txt" })  -- File optional (default "
 
 | Method | Description |
 |---|---|
-| `Bind(library, opts?)` | Attach to the library. `opts.File` gives the persistence file a per-brand name so parallel scripts don't fight over one setting |
+| `Bind(library, opts?)` | Attach to the library. `opts.File` names the default-theme file, `opts.CustomFile` the custom-themes file (per-brand, so parallel scripts don't fight over one setting) |
 | `SetTheme(name)` -> `bool` | Apply + save. Re-applying the active theme is a cheap no-op; an external `EZ:SetTheme()` call automatically un-sticks that guard |
-| `GetThemes()` | Sorted theme-name list |
-| `AddTheme(name, colorTable)` -> `bool` | Register/replace a theme. Missing roles are filled from frozen Midnight; non-Color3 values are dropped with a warning |
-| `LoadSaved()` | Read + apply the persisted choice (trims whitespace) |
+| `GetThemes()` | Sorted theme-name list (built-ins + custom) |
+| `AddTheme(name, colorTable)` -> `bool` | Register/replace an **ephemeral** theme. Missing roles are filled from frozen Midnight; non-Color3 values are dropped with a warning |
+| `LoadSaved()` | Load custom themes from disk, then read + apply the persisted choice (trims whitespace) |
+| `AddCustomTheme(name, colorTable)` -> `bool` | Create/overwrite a **persisted** custom theme (used by Settings ▸ Create theme) |
+| `GetCustomThemeNames()` | Sorted list of persisted custom themes |
+| `DeleteTheme(name)` -> `bool, err` | Delete a **custom** theme only — built-ins are protected |
+| `ExportTheme(name)` -> `json, err` | Theme as JSON (hex colours + `Name`) — clipboard-ready |
+| `ImportTheme(json, preferredName?)` -> `bool, err` | Accepts a single theme (`{ Name?, Base="#..", ... }`) or a map of themes; colours may be hex strings or `{R,G,B}` tables |
+| `ResetDefault()` | Delete the saved default and fall back to Midnight |
 
 ```lua
 ThemeManager:AddTheme("Brand Purple", {
@@ -60,4 +66,4 @@ Switching themes recolours the **entire UI live** — windows, dropdown lists, p
 
 ### Extra in ThemeManager
 
-Ocean `(50,140,255)` · Rose `(240,80,130)` · Emerald `(50,210,120)` · Sunset `(255,130,50)` — plus Midnight again as the merge base.
+Ocean `(50,140,255)` · Rosé `(240,80,130)` · Emerald `(50,210,120)` · Sunset `(255,130,50)` — plus Midnight again as the merge base.

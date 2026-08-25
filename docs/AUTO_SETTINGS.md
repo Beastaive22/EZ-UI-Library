@@ -4,13 +4,29 @@
 
 ```lua
 local Window = EZ:CreateWindow({ Title = "My Script" })
--- Done. The window now has a "Settings" tab containing:
---   • Active-theme dropdown (13 presets + any custom themes)
---   • Configs: create / list / load / overwrite / delete (with confirm
---     dialogs), Set as Autoload / Clear Autoload + live status label,
---     JSON import/export
---   • Profiles: save / new / rename / delete + active-profile label
---   • Autoloaded config restored automatically after your tabs finish building
+-- Done. The window now has a "Settings" tab laid out in symmetric
+-- groupboxes (Obsidian-style, two columns):
+--
+--   LEFT:  Menu groupbox
+--          • Open Keybind Menu toggle      • Notification Side dropdown
+--          • Custom Cursor toggle          • DPI Scale dropdown
+--          • Always On Top toggle          • Corner Radius slider
+--          • Menu bind (rebinds the window hotkey)  • Unload button
+--
+--   LEFT:  Themes groupbox
+--          • Background/Main/Accent/Outline/Font colour pickers
+--          • Font Face dropdown  • Background Image input
+--          • Theme list + Set as default
+--          • Custom theme CRUD (create/overwrite/delete/refresh,
+--            set & reset default, JSON import/export) - persisted
+--
+--   RIGHT: Configuration groupbox
+--          • Config name / create / list / load / overwrite / delete
+--          • Refresh list, Set as autoload / Reset autoload + live status
+--          • Config JSON import / export
+--
+-- Profiles are NOT attached by default anymore - build them manually with
+-- SaveManager:BuildProfileUI(section), or pass AddSettingsTab({Profiles=true}).
 ```
 
 ---
@@ -42,9 +58,11 @@ EZ:CreateWindow({ Title = "Tour", AutoSettings = false })
 
 4. **Host-built Settings tab wins:** if you added a tab literally named `"Settings"` yourself, AutoSettings skips its own tab and only runs config autoload on top.
 
-5. Your saved theme (`LoadSaved`) is applied before/while the tab builds; the live recolour sweep covers everything already on screen.
+5. **Placement is stable:** the Settings tab builds *deferred* (after your synchronous `AddTab` calls) and its sidebar button is pinned to the **bottom** of the list. Your first real tab keeps both the top slot and the initial focus — AutoSettings can no longer jump to the top of the sidebar or open as the active tab.
 
-6. **Autoload timing:** `SaveManager:LoadAutoloadConfig()` runs deferred — after your synchronous tab-building code finishes — so elements created later in your script still receive their saved values.
+6. Your saved theme (`LoadSaved`) is applied before/while the tab builds; the live recolour sweep covers everything already on screen.
+
+7. **Autoload timing:** `SaveManager:LoadAutoloadConfig()` runs deferred — after your synchronous tab-building code finishes — so elements created later in your script still receive their saved values.
 
 ---
 
@@ -59,16 +77,15 @@ ThemeManager:Bind(EZ); SaveManager:Bind(EZ, "Configs")
 for name, tbl in EZ.Themes do ThemeManager:AddTheme(name, tbl) end
 ThemeManager:LoadSaved()
 
-local Settings = Window:AddTab("Settings", "settings")
-Settings:AddSection("Theme"):AddDropdown("_EZTheme", {
-    Text = "Active theme",
-    Values = ThemeManager:GetThemes(),
-    Default = ThemeManager.Current,
-    Callback = function(v) ThemeManager:SetTheme(v) end,
-})
-SaveManager:BuildConfigSection(Settings:AddSection("Configs"), Window)
-SaveManager:BuildProfileUI(Settings:AddSection("Profiles"), Window)
+-- one call builds the whole groupbox layout (Menu / Themes / Configuration):
+local Settings = Window:AddSettingsTab({ Title = "Settings" })
+
+-- or assemble it yourself from groupboxes:
+local menuGb  = Settings:AddLeftGroupbox("Menu")
+local themesGb = Settings:AddLeftGroupbox("Themes")
+local cfgGb   = Settings:AddRightGroupbox("Configuration")
+SaveManager:BuildConfigSection(cfgGb, Window)
 task.defer(function() SaveManager:LoadAutoloadConfig() end)
 ```
 
-`Example.lua` runs exactly this manual version (with `AutoSettings = false`) as a teaching tour.
+`Example.lua` runs a manual version (with `AutoSettings = false`) as a teaching tour.

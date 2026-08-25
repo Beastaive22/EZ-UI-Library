@@ -23,7 +23,7 @@ MyHubConfigs/                  <- Folder (SetFolder / Bind)
     └── Profile 1.json
 ```
 
-With `SetSubFolder("game1")` everything shifts one level deeper — **configs, the profiles folder and autoload all stay together**:
+With `SetSubFolder("game1")` configs and the profiles folder shift one level deeper — **the autoload pointer (`_autoload.txt`) and active-profile marker (`_active_profile.txt`) always stay at the Folder root**, so they survive sub-folder switches:
 
 ```
 MyHubConfigs/game1/*.json · MyHubConfigs/game1/profiles/ · MyHubConfigs/_autoload.txt
@@ -108,7 +108,7 @@ Restore rules shared by both formats:
 
 - Values are validated by type before applying; garbage is skipped silently
 - Elements are restored through their handles (fires callbacks + listeners), deferred per object so callbacks can't re-enter mid-loop
-- Unchanged values still push into the element (unlike some libraries) — restores are forceful
+- Parsers skip when `Get()` already equals the saved value — unchanged values never re-push into the element
 - Keybinds restore key + mode + modifiers via `Configure`; color pickers restore hex **and** transparency
 
 ### Import / Export (clipboard-friendly)
@@ -171,8 +171,8 @@ Renders the full management UI into any EZ section:
 3. *divider*
 4. **Config list** dropdown (selection preserved across refreshes)
 5. Load config / Overwrite config / Delete config / Refresh list (destructive ones confirm)
-6. **Set as Autoload** / **Clear Autoload**
-7. Live label: `Current autoload: <name>`
+6. **Set as Autoload** / **Reset autoload**
+7. Live label: `Current autoload config: <name>`
 8. *divider*
 9. **Config JSON** input + Import-from-box / Export-to-clipboard
 

@@ -263,6 +263,17 @@ do
             if elem.Get and elem.Get() == v then return end
             elem:Set(v)
         end)
+
+    -- TabBox handle (Library.lua AddTabBox): .Value is the active tab NAME,
+    -- .Get()/.Set(name) read/write it and .Tabs is a name-keyed map of the
+    -- per-tab sections - so the saved string doubles as the membership check.
+    def("TabBox",
+        function(elem) return { value = tostring(elem.Value) } end,
+        function(elem, data)
+            if type(data.value) ~= "string" then return end
+            if elem.Get and elem.Get() == data.value then return end
+            if elem.Tabs and elem.Tabs[data.value] then elem:Set(data.value) end
+        end)
 end
 
 -- ── core serialization ──────────────────────────────────
@@ -409,6 +420,30 @@ function SaveManager:SetLibrary(library)
     if library then library._saveManager = self end
 end
 
+-- Single source of truth for where configs live.
+local function configRoot(mgr)
+    if trim(mgr.Folder) == "" then return false end
+    if trim(mgr.SubFolder) ~= "" then
+        return mgr.Folder .. "/" .. mgr.SubFolder
+    end
+    return mgr.Folder
+end
+
+-- Single source of truth for where profiles live. Every profile/autoload API
+-- used to hardcode Folder .. "/profiles" while BuildFolderTree created the
+-- folder under the deepest configured path (Folder/SubFolder/profiles), so
+-- enabling a SubFolder sent profiles and configs into different trees and the
+-- whole profile system silently died (empty list, failed writes, autoload
+-- reporting "Config file not found").
+-- Declared BEFORE :Bind, which restores the active profile on attach -
+-- referenced at its old position below, the call hit a nil global inside a
+-- pcall and the restore silently died.
+local function profilesRoot(mgr)
+    local root = configRoot(mgr)
+    if not root then return false end
+    return root .. "/profiles"
+end
+
 function SaveManager:Bind(library, folder)
     self.Library = library
     if library then library._saveManager = self end
@@ -432,25 +467,6 @@ function SaveManager:Bind(library, folder)
     return self
 end
 
-local function configRoot(mgr)
-    if trim(mgr.Folder) == "" then return false end
-    if trim(mgr.SubFolder) ~= "" then
-        return mgr.Folder .. "/" .. mgr.SubFolder
-    end
-    return mgr.Folder
-end
-
--- Single source of truth for where profiles live. Every profile/autoload API
--- used to hardcode Folder .. "/profiles" while BuildFolderTree created the
--- folder under the deepest configured path (Folder/SubFolder/profiles), so
--- enabling a SubFolder sent profiles and configs into different trees and the
--- whole profile system silently died (empty list, failed writes, autoload
--- reporting "Config file not found").
-local function profilesRoot(mgr)
-    local root = configRoot(mgr)
-    if not root then return false end
-    return root .. "/profiles"
-end
 
 function SaveManager:GetPaths()
     local root = configRoot(self)
@@ -1103,7 +1119,7 @@ function SaveManager:BuildConfigSection(section, window)
 
     local function selectedConfig()
         local v = mgr.Library.Flags["_EZSM_ConfigList"]
-        if type(v) ~= "string" or trim(v) == nil then return nil end
+        if type(v) ~= "string" or trim(v) == "" then return nil end
         return v
     end
 
@@ -1198,7 +1214,7 @@ function SaveManager:BuildConfigSection(section, window)
     })
 
     section:AddButton({
-        Text = "Clear Autoload",
+        Text = "Reset autoload",
         Callback = function()
             local ok, err = mgr:DeleteAutoLoadConfig()
             if ok then
@@ -1221,7 +1237,7 @@ function SaveManager:BuildConfigSection(section, window)
     local autoloadLbl = section:AddLabel("Current autoload: none")
     refreshStatus = function()
         local name, autoOk = mgr:GetAutoloadConfig()
-        autoloadLbl:Set("Current autoload: " .. ((autoOk == true and type(name) == "string") and name or "none"))
+        autoloadLbl:Set("Current autoload config: " .. ((autoOk == true and type(name) == "string") and name or "none"))
     end
     refreshStatus()
 
@@ -1233,10 +1249,10 @@ function SaveManager:BuildConfigSection(section, window)
     })
 
     section:AddButton({
-        Text = "Import from JSON box",
+        Text = "Import config",
         Callback = function()
             local json = mgr.Library.Flags["_EZSM_JSON"]
-            if type(json) ~= "string" or trim(json) == nil then
+            if type(json) ~= "string" or trim(json) == "" then
                 notifyResult(mgr, false, "Import", "?", "JSON box is empty")
                 return
             end
@@ -1252,7 +1268,7 @@ function SaveManager:BuildConfigSection(section, window)
     })
 
     section:AddButton({
-        Text = "Export current to clipboard",
+        Text = "Export current config",
         Callback = function()
             -- SaveJSON returns "", false, err on failure; "" is truthy in
             -- Lua, so the old `if not json` guard never fired and an empty

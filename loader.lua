@@ -40,6 +40,14 @@ local Window = EZ:CreateWindow({
 QuickBar:Bind(EZ, Window)
 NotifHistory:Bind(EZ, Window)
 
+-- EZ:Destroy() fires OnDestroy handlers BEFORE it empties the ScreenGuis, so
+-- the addons get a live window to tear down; without this their dock and bell
+-- would strand on screen after an unload/re-execution.
+EZ:OnDestroy(function()
+    pcall(function() QuickBar:Destroy() end)
+    pcall(function() NotifHistory:Destroy() end)
+end)
+
 ----------------------------------------------------------------
 -- YOUR FEATURES  (replace the demos below)
 ----------------------------------------------------------------

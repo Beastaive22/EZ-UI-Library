@@ -71,8 +71,16 @@ end
 
 local function corner(parent, r)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 6)
+    local lib = QuickBar.Library
+    -- honour the library's live Corner Radius override (Settings > Menu)
+    c.CornerRadius = UDim.new(0, (lib and lib._cornerRadiusOverride) or r or 6)
     c.Parent = parent
+    -- register so radius changes retune addon surfaces too
+    pcall(function()
+        if lib and lib._cornerRegistry then
+            table.insert(lib._cornerRegistry, { inst = c, fallback = r or 6 })
+        end
+    end)
     return c
 end
 
@@ -1429,6 +1437,12 @@ function QuickBar:Bind(library, window, opts)
         )
 
         task.delay(0.25, function()
+            -- The window can be re-shown inside this window of time; without
+            -- the guard the dock popped up OVER the visible window.
+            if self.Visible then
+                return
+            end
+
             if #QuickBar._pins > 0 then
                 bar.Visible = true
 

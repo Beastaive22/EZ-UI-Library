@@ -35,8 +35,16 @@ end
 
 local function corner(parent, r)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 6)
+    local lib = NotifHistory.Library
+    -- honour the library's live Corner Radius override (Settings > Menu)
+    c.CornerRadius = UDim.new(0, (lib and lib._cornerRadiusOverride) or r or 6)
     c.Parent = parent
+    -- register so radius changes retune addon surfaces too
+    pcall(function()
+        if lib and lib._cornerRegistry then
+            table.insert(lib._cornerRegistry, { inst = c, fallback = r or 6 })
+        end
+    end)
     return c
 end
 
@@ -74,21 +82,13 @@ local function buildEntryCard(scroll, entry, theme)
     card.Parent = scroll
     corner(card, 6)
 
-    -- accent bar
+    -- accent colors still identify the type via the icon; no edge bar
     local accentColors = {
         info = theme.Info,
         success = theme.Success,
         warning = theme.Warning,
         error = theme.Error,
     }
-    local accent = Instance.new("Frame")
-    accent.Size = UDim2.new(0, 3, 1, -6)
-    accent.Position = UDim2.new(0, 3, 0, 3)
-    accent.BackgroundColor3 = accentColors[entry.type] or theme.Accent
-    accent.BorderSizePixel = 0
-    accent.ZIndex = 6
-    accent.Parent = card
-    corner(accent, 2)
 
     -- type icon
     local icon = Instance.new("ImageLabel")

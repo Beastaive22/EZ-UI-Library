@@ -3,7 +3,11 @@
     Theme switching for the EZ UI Library
 ]]
 
+local HttpService = game:GetService("HttpService")
+
 local THEME_FILE = "EZTheme.txt"
+-- custom (user-created) themes persist separately from the built-ins
+local CUSTOM_FILE = "EZCustomThemes.txt"
 
 -- Every colour role a theme may define. Custom tables are filtered against
 -- this list so a stray non-Color3 value (hex string, number) can never reach
@@ -36,6 +40,8 @@ local ThemeManager = {
     Library = nil,
     Current = "Midnight",
     _applied = nil,
+    -- user-created themes (persisted to CUSTOM_FILE); built-ins stay in Themes
+    CustomThemes = {},
     Themes = {
         Midnight = {
             Name = "Midnight",
@@ -69,8 +75,11 @@ local ThemeManager = {
             Error = Color3.fromRGB(255, 90, 90),
             Info = Color3.fromRGB(80, 170, 255),
         },
-        Rose = {
-            Name = "Rose",
+        -- accented key so AddTheme("Rose") / the library's Rose Pine preset
+        -- can never overwrite this built-in (bracket-quoted: identifiers
+        -- must be ASCII)
+        ["Rosé"] = {
+            Name = "Rosé",
             Base = Color3.fromRGB(14, 10, 12),
             Surface = Color3.fromRGB(26, 18, 22),
             Panel = Color3.fromRGB(36, 24, 30),
@@ -135,6 +144,9 @@ function ThemeManager:Bind(library, opts)
     -- own via ThemeManager:Bind(EZ, { File = "YourBrand_Theme.txt" }).
     if type(opts) == "table" and type(opts.File) == "string" and #opts.File > 0 then
         THEME_FILE = opts.File
+    end
+    if type(opts) == "table" and type(opts.CustomFile) == "string" and #opts.CustomFile > 0 then
+        CUSTOM_FILE = opts.CustomFile
     end
 
     -- Direct EZ:SetTheme calls bypass this manager. Without invalidating
@@ -218,8 +230,194 @@ function ThemeManager:AddTheme(name, themeTable)
     return true
 end
 
+-- ~~ custom theme CRUD (Settings > Themes groupbox) ~~
+
+local function colorToHex(c)
+    return string.format("#%02X%02X%02X",
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5))
+end
+
+local function hexToColor(hex)
+    if type(hex) ~= "string" then return nil end
+    hex = hex:gsub("#", "")
+    if #hex ~= 6 or not hex:match("^[%x]+$") then return nil end
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    if not r or not g or not b then return nil end
+    return Color3.fromRGB(r, g, b)
+end
+
+local function safeThemeName(v)
+    if type(v) ~= "string" then return nil end
+    v = v:gsub("^%s+", ""):gsub("%s+$", "")
+    if v == "" or #v > 64 then return nil end
+    if v:find('[<>:"/\\|%?%z]') then return nil end
+    return v
+end
+
+-- accepts "#RRGGBB" strings or {R,G,B} tables; returns a sanitized theme
+local function parseThemeColors(entry)
+    local colors = {}
+    if typeof(entry) ~= "table" then return colors end
+    for _, role in ROLE_KEYS do
+        local v = entry[role]
+        if type(v) == "string" then
+            local c = hexToColor(v)
+            if c then colors[role] = c end
+        elseif typeof(v) == "table" then
+            local r, g, b = tonumber(v.R), tonumber(v.G), tonumber(v.B)
+            if r and g and b then colors[role] = Color3.fromRGB(r, g, b) end
+        end
+    end
+    return colors
+end
+
+function ThemeManager:GetCustomThemeNames()
+    local names = {}
+    for k in self.CustomThemes do
+        table.insert(names, k)
+    end
+    table.sort(names)
+    return names
+end
+
+-- Create/overwrite a persisted custom theme from the CURRENT UI colours.
+function ThemeManager:AddCustomTheme(name, themeTable)
+    if not safeThemeName(name) then return false, "Invalid theme name" end
+    -- a name that matches a NON-custom built-in must not be hijacked: the
+    -- overwrite would silently replace the preset (and DeleteTheme could
+    -- never remove the custom copy afterwards)
+    if self.Themes[name] and not self.CustomThemes[name] then
+        warn(`[EZ ThemeManager] "{name}" is a built-in theme - choose another name`)
+        return false, "Name collides with a built-in theme"
+    end
+    local ok = self:AddTheme(name, themeTable)
+    if not ok then return false, "Invalid theme table" end
+    -- persist the sanitized version actually in use
+    self.CustomThemes[name] = sanitizeTheme(self.Themes[name])
+    self:SaveCustomThemes()
+    return true
+end
+
+function ThemeManager:DeleteTheme(name)
+    if type(name) ~= "string" or not self.CustomThemes[name] then
+        return false, "Not a custom theme"
+    end
+    self.CustomThemes[name] = nil
+    self.Themes[name] = nil
+    if self._applied == name then self._applied = nil end
+    self:SaveCustomThemes()
+    return true
+end
+
+function ThemeManager:SaveCustomThemes()
+    pcall(function()
+        if not writefile then return end
+        local payload = {}
+        for name, theme in self.CustomThemes do
+            local entry = {}
+            for _, role in ROLE_KEYS do
+                local c = theme[role]
+                if typeof(c) == "Color3" then entry[role] = colorToHex(c) end
+            end
+            payload[name] = entry
+        end
+        writefile(CUSTOM_FILE, HttpService:JSONEncode(payload))
+    end)
+end
+
+function ThemeManager:LoadCustomThemes()
+    pcall(function()
+        if not isfile or not readfile or not isfile(CUSTOM_FILE) then return end
+        local raw = readfile(CUSTOM_FILE)
+        if type(raw) ~= "string" or raw == "" then return end
+        local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+        if not ok or typeof(data) ~= "table" then return end
+        for name, entry in data do
+            if type(name) == "string" and typeof(entry) == "table" then
+                local colors = parseThemeColors(entry)
+                if next(colors) ~= nil then
+                    self.CustomThemes[name] = sanitizeTheme(colors)
+                    self:AddTheme(name, colors)
+                end
+            end
+        end
+    end)
+end
+
+-- Returns JSON (hex colours + Name), or nil + err.
+function ThemeManager:ExportTheme(name)
+    local theme = self.Themes[name]
+    if typeof(theme) ~= "table" then return nil, "Unknown theme" end
+    local payload = { Name = name }
+    for _, role in ROLE_KEYS do
+        local c = theme[role]
+        if typeof(c) == "Color3" then payload[role] = colorToHex(c) end
+    end
+    local ok, json = pcall(function() return HttpService:JSONEncode(payload) end)
+    if not ok then return nil, "Encode failed" end
+    return json, true
+end
+
+-- Accepts a single theme ({ Name?, Base="#..", ... }) or a map of themes.
+-- preferredName is used when the JSON has no Name. Returns success, err.
+function ThemeManager:ImportTheme(jsonStr, preferredName)
+    if type(jsonStr) ~= "string" or jsonStr == "" then return false, "No JSON provided" end
+    local ok, data = pcall(function() return HttpService:JSONDecode(jsonStr) end)
+    if not ok or typeof(data) ~= "table" then return false, "Bad JSON" end
+
+    local isSingle = false
+    for _, role in ROLE_KEYS do
+        if data[role] ~= nil then isSingle = true break end
+    end
+
+    if isSingle then
+        local name = safeThemeName(data.Name) or safeThemeName(preferredName)
+        if not name then return false, "No theme name (fill 'Custom theme name' or add Name in JSON)" end
+        local colors = parseThemeColors(data)
+        if next(colors) == nil then return false, "No valid colors in JSON" end
+        self:AddCustomTheme(name, colors)
+        -- apply immediately so an import is visible without a manual pick;
+        -- bare `self.Current = name` never touched the UI or the dedupe guard
+        self:SetTheme(name)
+        return true
+    end
+
+    -- map form: { ["MyTheme"] = { Base = ... }, ... }
+    local count = 0
+    for name, entry in data do
+        if type(name) == "string" and typeof(entry) == "table" then
+            local colors = parseThemeColors(entry)
+            if next(colors) ~= nil then
+                self:AddCustomTheme(name, colors)
+                count = count + 1
+            end
+        end
+    end
+    if count == 0 then return false, "No themes found in JSON" end
+    return true
+end
+
+-- Clear the persisted default and fall back to Midnight.
+function ThemeManager:ResetDefault()
+    pcall(function()
+        if delfile and isfile and isfile(THEME_FILE) then
+            delfile(THEME_FILE)
+        end
+    end)
+    self._applied = nil
+    self.Current = "Midnight"
+    self:SetTheme("Midnight")
+    return true
+end
+
 -- auto-load saved theme
 function ThemeManager:LoadSaved()
+    -- custom themes must exist before a saved name can resolve to one
+    self:LoadCustomThemes()
     pcall(function()
         if not isfile or not readfile then return end
         if not isfile(THEME_FILE) then return end
