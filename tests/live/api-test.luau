@@ -6,7 +6,9 @@
 ]]
 
 local repo = "https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/"
-local EZ      = loadstring(game:HttpGet(repo .. "Library.lua"))()
+-- local overrides for uncommitted changes (see tests/README.md)
+local EZ = getgenv().EZ_LOCAL or loadstring(game:HttpGet(repo .. "Library.lua"))()
+local SM = getgenv().SM_LOCAL or loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 local Icons   = loadstring(game:HttpGet(repo .. "addons/Icons.lua"))()
 
 local results, started = {}, os.clock()
@@ -143,6 +145,21 @@ local function runAll()
     else
         check("CloseBehavior window-only", false, "EZCloseBtn not found")
     end
+    -- SaveManager per-game isolation (3.7)
+    SM:Bind(EZ, "EZTestConfigs")
+    local gameKey = tostring((game.GameId ~= 0 and game.GameId) or game.PlaceId)
+    local smRoot = "EZTestConfigs/" .. gameKey
+    check("SaveManager per-game path", isfolder(smRoot), smRoot)
+    check("SaveManager namespaced Save", SM:Save("T_Iso") == true and isfile(smRoot .. "/T_Iso.json"))
+    local smJson = SM:SaveJSON("T_Iso")
+    check("SaveManager metadata stamp", type(smJson) == "string" and smJson:find('"game"') ~= nil)
+    SM:Delete("T_Iso")
+    -- legacy migration: a 3.6-era root autoload pointer moves into the game ns
+    pcall(function() writefile("EZTestConfigs/_autoload.txt", "T_Migrated") end)
+    SM:Bind(EZ, "EZTestConfigs")
+    check("SaveManager legacy migration", isfile(smRoot .. "/_autoload.txt") and not isfile("EZTestConfigs/_autoload.txt"))
+    pcall(function() SM:DeleteAutoLoadConfig() end)
+
     w:Destroy()
 end
 

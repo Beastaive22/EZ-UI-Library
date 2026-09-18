@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.7.0
+
+**SaveManager is namespaced per game.** The executor workspace is shared by
+every game and script, so 3.6 and earlier let a config (or the autoload
+pointer) saved in one game silently apply in the next one.
+
+### Added
+- **Per-game config isolation** — configs, `profiles/`, `_autoload.txt` and
+  `_active_profile.txt` now live under `Folder/<experience id>/` (GameId,
+  PlaceId fallback in Studio). Opt out with `SaveManager:SetPerGame(false)`;
+  override the key with `SaveManager:SetGameKey(key)` (e.g. a PlaceId to
+  isolate sub-places of one experience).
+- **Legacy migration** — on `Bind`, 3.6-era files (root `*.json` configs,
+  `profiles/`, `_autoload.txt`, `_active_profile.txt`) are moved into the
+  per-game namespace automatically: copy-then-delete, fully pcall-guarded,
+  nothing deleted unless the copy succeeded.
+- **Config metadata** — format-2 configs now carry `game` + `script`; loading
+  a config saved for another game (via import/JSON) warns instead of silently
+  half-applying.
+- `SubFolder` now nests **under** the game key (`Folder/<game>/<sub>/`), so
+  place-level splits stay per-game too.
+
+### Changed
+- Default disk layout is `Folder/<game id>/*.json`, `Folder/<game id>/profiles/`,
+  `Folder/<game id>/_autoload.txt`, `Folder/<game id>/_active_profile.txt`.
+  Same `Bind` signature as before — existing scripts keep working.
+
 ## 3.6.0
 
 Correctness sweep (live-verified against an executor client), a batch of

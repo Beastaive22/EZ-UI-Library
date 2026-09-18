@@ -66,6 +66,13 @@ local SaveManager = {
     Folder = "EZConfigs",
     SubFolder = "",
 
+    -- v3.7 per-game namespacing: the executor workspace is shared by every
+    -- game and script, so a config or autoload pointer saved in one game
+    -- used to silently apply in the next one. Configs, profiles and pointers
+    -- now live under Folder/<game key>/ by default.
+    PerGame = true,
+    GameKey = nil, -- nil = computed default (experience id)
+
     Ignore = {},
     LoadingOrder = {},
     UseLoadingOrder = false,
@@ -278,9 +285,66 @@ end
 
 -- ── core serialization ──────────────────────────────────
 -- New format:
---   { format = 2, timestamp = "...", name = "...",
+--   { format = 2, timestamp = "...", name = "...", game = "...", script = "...",
 --     objects = { { idx, type, ...payload } ... } }
 -- Legacy format (flat map of flag -> { type, value }) is still loaded.
+
+-- v3.7: default game key — the experience id (GameId), falling back to the
+-- place id, and empty in Studio/local builds (where both are 0) so test
+-- environments keep the flat legacy layout.
+local DEFAULT_GAME_KEY = ""
+do
+    local okGid, gid = pcall(function() return game.GameId end)
+    if okGid and type(gid) == "number" and gid ~= 0 then
+        DEFAULT_GAME_KEY = tostring(gid)
+    else
+        local okPid, pid = pcall(function() return game.PlaceId end)
+        if okPid and type(pid) == "number" and pid ~= 0 then
+            DEFAULT_GAME_KEY = tostring(pid)
+        end
+    end
+end
+
+-- v3.7 per-game namespacing helpers. Declared up here because the serializer
+-- below stamps configs with the game key.
+local function gameKey(mgr)
+    if mgr.PerGame == false then return "" end
+    if type(mgr.GameKey) == "string" and trim(mgr.GameKey) ~= "" then
+        return mgr.GameKey
+    end
+    return DEFAULT_GAME_KEY
+end
+
+-- Single source of truth for where configs live.
+local function configRoot(mgr)
+    if trim(mgr.Folder) == "" then return false end
+    local root = mgr.Folder
+    local gk = gameKey(mgr)
+    if gk ~= "" then root = root .. "/" .. gk end
+    if trim(mgr.SubFolder) ~= "" then
+        root = root .. "/" .. mgr.SubFolder
+    end
+    return root
+end
+
+-- Single source of truth for where profiles live. Every profile/autoload API
+-- used to hardcode Folder .. "/profiles" while BuildFolderTree created the
+-- folder under the deepest configured path (Folder/SubFolder/profiles), so
+-- enabling a SubFolder sent profiles and configs into different trees and the
+-- whole profile system silently died (empty list, failed writes, autoload
+-- reporting "Config file not found").
+local function profilesRoot(mgr)
+    local root = configRoot(mgr)
+    if not root then return false end
+    return root .. "/profiles"
+end
+
+-- Single source of truth for the per-scope active-profile marker.
+local function activeProfilePath(mgr)
+    local root = configRoot(mgr)
+    if not root then return false end
+    return root .. "/" .. ACTIVE_PROFILE_FILE
+end
 
 local function serializeObjects(mgr, configName)
     local lib = mgr.Library
@@ -311,6 +375,8 @@ local function serializeObjects(mgr, configName)
         format = 2,
         timestamp = os.date("%d.%m.%Y %H:%M:%S"),
         name = configName or "",
+        game = gameKey(mgr),
+        script = mgr.Folder,
         objects = objects,
     }
 end
@@ -420,30 +486,6 @@ function SaveManager:SetLibrary(library)
     if library then library._saveManager = self end
 end
 
--- Single source of truth for where configs live.
-local function configRoot(mgr)
-    if trim(mgr.Folder) == "" then return false end
-    if trim(mgr.SubFolder) ~= "" then
-        return mgr.Folder .. "/" .. mgr.SubFolder
-    end
-    return mgr.Folder
-end
-
--- Single source of truth for where profiles live. Every profile/autoload API
--- used to hardcode Folder .. "/profiles" while BuildFolderTree created the
--- folder under the deepest configured path (Folder/SubFolder/profiles), so
--- enabling a SubFolder sent profiles and configs into different trees and the
--- whole profile system silently died (empty list, failed writes, autoload
--- reporting "Config file not found").
--- Declared BEFORE :Bind, which restores the active profile on attach -
--- referenced at its old position below, the call hit a nil global inside a
--- pcall and the restore silently died.
-local function profilesRoot(mgr)
-    local root = configRoot(mgr)
-    if not root then return false end
-    return root .. "/profiles"
-end
-
 function SaveManager:Bind(library, folder)
     self.Library = library
     if library then library._saveManager = self end
@@ -452,11 +494,15 @@ function SaveManager:Bind(library, folder)
     else
         self:BuildFolderTree()
     end
+    -- move anything saved by 3.6 or earlier into the per-game namespace
+    -- (configs, profiles/ and the autoload/active-profile pointers) so files
+    -- written by another game/script are never picked up again
+    self:MigrateLegacyLayout()
     -- restore last active profile name (only when its file still exists;
     -- a deleted or renamed profile must not linger as the active one)
     pcall(function()
-        local p = self.Folder .. "/" .. ACTIVE_PROFILE_FILE
-        if FS_IsFile(p) then
+        local p = activeProfilePath(self)
+        if type(p) == "string" and FS_IsFile(p) then
             local name = trim(readfile(p))
             local root = profilesRoot(self)
             if name and type(root) == "string" and FS_IsFile(root .. "/" .. name .. ".json") then
@@ -526,6 +572,102 @@ function SaveManager:SetSubFolder(subFolder)
     assert(isValidFolderPath(subFolder), "Invalid path provided")
     self.SubFolder = subFolder
     self:BuildFolderTree()
+end
+
+-- v3.7 per-game namespacing controls. SetPerGame(false) restores the flat
+-- pre-3.7 layout (Folder/*.json with global pointers) for hosts that really
+-- want shared state; SetGameKey overrides the default experience id — use a
+-- PlaceId there if sub-places of one experience should isolate separately.
+function SaveManager:SetPerGame(enabled)
+    self.PerGame = enabled ~= false
+    self:BuildFolderTree()
+    self:MigrateLegacyLayout()
+end
+
+function SaveManager:SetGameKey(key)
+    if key == nil then
+        self.GameKey = nil
+    else
+        assert(isValidFolderPath(tostring(key)), "Invalid game key provided")
+        self.GameKey = tostring(key)
+    end
+    self:BuildFolderTree()
+    self:MigrateLegacyLayout()
+end
+
+-- v3.7: move anything saved by 3.6 or earlier (configs, profiles/ and the
+-- autoload/active-profile pointers, all directly under Folder) into the
+-- per-game namespace. Silent and fully guarded: whatever cannot be moved
+-- simply stays behind; nothing is deleted that failed to copy first.
+function SaveManager:MigrateLegacyLayout()
+    local root = configRoot(self)
+    if not root or root == self.Folder or gameKey(self) == "" then return false end
+
+    local moved = false
+
+    for _, name in { AUTOLOAD_FILE, ACTIVE_PROFILE_FILE } do
+        local legacy = self.Folder .. "/" .. name
+        local target = root .. "/" .. name
+        if FS_IsFile(legacy) and not FS_IsFile(target) then
+            local ok, content = pcall(readfile, legacy)
+            if ok and type(content) == "string" then
+                pcall(writefile, target, content)
+                if FS_IsFile(target) then
+                    pcall(delfile, legacy)
+                    moved = true
+                end
+            end
+        end
+    end
+
+    local legacyProfiles = self.Folder .. "/profiles"
+    local targetProfiles = root .. "/profiles"
+    if FS_IsFolder(legacyProfiles) then
+        local okList, files = pcall(FS_ListFiles, legacyProfiles)
+        if okList and typeof(files) == "table" and #files > 0 then
+            if not FS_IsFolder(targetProfiles) then pcall(makefolder, targetProfiles) end
+            for _, f in files do
+                if FS_IsFile(f) then
+                    local base = string.match(f, "([^/\\]+)$")
+                    local dst = targetProfiles .. "/" .. tostring(base)
+                    if not FS_IsFile(dst) then
+                        local okRead, content = pcall(readfile, f)
+                        if okRead and type(content) == "string" then
+                            pcall(writefile, dst, content)
+                            if FS_IsFile(dst) then
+                                pcall(delfile, f)
+                                moved = true
+                            end
+                        end
+                    end
+                end
+            end
+            pcall(delfolder, legacyProfiles)
+        end
+    end
+
+    if not FS_IsFolder(root) then pcall(makefolder, root) end
+    local okRoot, rootFiles = pcall(FS_ListFiles, self.Folder)
+    if okRoot and typeof(rootFiles) == "table" then
+        for _, f in rootFiles do
+            if FS_IsFile(f) and string.match(f, "%.json$") then
+                local base = string.match(f, "([^/\\]+)$")
+                local dst = root .. "/" .. tostring(base)
+                if not FS_IsFile(dst) then
+                    local okRead, content = pcall(readfile, f)
+                    if okRead and type(content) == "string" then
+                        pcall(writefile, dst, content)
+                        if FS_IsFile(dst) then
+                            pcall(delfile, f)
+                            moved = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return moved
 end
 
 -- ── indexes ─────────────────────────────────────────────
@@ -617,6 +759,22 @@ function SaveManager:LoadJSON(content)
     end)
     if not okDecode or typeof(decoded) ~= "table" then
         return false, "Failed to decode config data"
+    end
+
+    -- v3.7: configs are namespaced per game, so a foreign-game marker on an
+    -- imported/shared config means some ids may not apply. Warn once, still
+    -- load — the user pasted this config on purpose.
+    if typeof(decoded.game) == "string" and decoded.game ~= "" and decoded.game ~= gameKey(self) then
+        local lib = self.Library
+        if lib and lib.Notify then
+            pcall(lib.Notify, lib, {
+                Title = "SaveManager",
+                Content = ("This config was saved for another game (%s) — settings whose ids match will still apply")
+                    :format(decoded.game),
+                Type = "warning",
+                Duration = 5,
+            })
+        end
     end
 
     if typeof(decoded.objects) == "table" then
@@ -813,7 +971,7 @@ function SaveManager:SaveProfile(name)
     end)
     if ok then
         self._activeProfile = name
-        pcall(function() writefile(self.Folder .. "/" .. ACTIVE_PROFILE_FILE, name) end)
+        pcall(function() writefile(activeProfilePath(self), name) end)
     end
     return ok, err
 end
@@ -834,7 +992,7 @@ function SaveManager:LoadProfile(name)
     local ok = self:LoadJSON(raw)
     if ok then
         self._activeProfile = name
-        pcall(function() writefile(self.Folder .. "/" .. ACTIVE_PROFILE_FILE, name) end)
+        pcall(function() writefile(activeProfilePath(self), name) end)
         return true
     end
     return false, "Bad profile format"
@@ -882,7 +1040,7 @@ function SaveManager:RenameProfile(old, new)
 
     if self._activeProfile == old then
         self._activeProfile = new
-        pcall(function() writefile(self.Folder .. "/" .. ACTIVE_PROFILE_FILE, new) end)
+        pcall(function() writefile(activeProfilePath(self), new) end)
     end
     return true
 end
@@ -890,7 +1048,9 @@ end
 -- ── autoload (targets a PROFILE) ────────────────────────
 
 local function getAutoloadPath(mgr)
-    return mgr.Folder .. "/" .. AUTOLOAD_FILE
+    local root = configRoot(mgr)
+    if not root then return false end
+    return root .. "/" .. AUTOLOAD_FILE
 end
 
 function SaveManager:GetAutoloadConfig()

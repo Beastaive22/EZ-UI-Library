@@ -13,23 +13,32 @@ SaveManager:Bind(EZ, "MyHubConfigs")
 
 ## Disk layout
 
-```
-MyHubConfigs/                  <- Folder (SetFolder / Bind)
-├── my-config.json             <- configs live at the root of the folder
-├── another-config.json
-├── _autoload.txt              <- name of the config that loads on launch
-├── _active_profile.txt        <- last active profile name
-└── profiles/                  <- profiles always nest here
-    └── Profile 1.json
-```
-
-With `SetSubFolder("game1")` configs and the profiles folder shift one level deeper — **the autoload pointer (`_autoload.txt`) and active-profile marker (`_active_profile.txt`) always stay at the Folder root**, so they survive sub-folder switches:
+**v3.7: everything is namespaced per game.** The executor workspace is shared
+by every game and script on it — without a game layer, a config (or the
+autoload pointer) saved in one game silently applied in the next one. The
+default game key is the experience id (`game.GameId`, falling back to
+`game.PlaceId`, empty in Studio). `SetPerGame(false)` restores the flat layout.
 
 ```
-MyHubConfigs/game1/*.json · MyHubConfigs/game1/profiles/ · MyHubConfigs/_autoload.txt
+MyHubConfigs/                      <- Folder (SetFolder / Bind)
+├── 123456789/                     <- game key (game.GameId by default)
+│   ├── my-config.json             <- configs live here
+│   ├── another-config.json
+│   ├── _autoload.txt              <- autoload pointer (per game)
+│   ├── _active_profile.txt        <- active profile marker (per game)
+│   └── profiles/
+│       └── Profile 1.json
+└── 987654321/                     <- another game, completely separate
 ```
 
-Name sanitisation: anything outside `[A-Za-z0-9 -_. ]` becomes `_`; `"."`, `".."` and the reserved name `autoload` are rejected.
+`SetSubFolder("doors-run")` nests one level deeper **under the game key**
+(`MyHubConfigs/123456789/doors-run/`) — place-level splits stay per-game too.
+On `Bind`, anything saved by 3.6 or earlier (root configs, `profiles/`,
+`_autoload.txt`, `_active_profile.txt`) is **migrated** into the per-game
+namespace automatically (copy-then-delete, fully guarded).
+
+Name sanitisation: anything outside `[A-Za-z0-9 -_. ]` becomes `_`; `"."`,
+`".."` and the reserved name `autoload` are rejected.
 
 ---
 
@@ -38,10 +47,13 @@ Name sanitisation: anything outside `[A-Za-z0-9 -_. ]` becomes `_`; `"."`, `".."
 | Method | Description |
 |---|---|
 | `SaveManager:SetLibrary(EZ)` | Bind the library (no folder work) |
-| `SaveManager:Bind(EZ, folder?)` | Full bind: SetFolder + build tree + restore active profile. Returns self |
+| `SaveManager:Bind(EZ, folder?)` | Full bind: SetFolder + build tree + **migrate legacy files** + restore active profile. Returns self |
 | `SaveManager:SetFolder(folder)` | Assert-valid folder, rebuild tree |
-| `SaveManager:SetSubFolder(sub)` | Nest configs + profiles one level deeper |
-| `SaveManager:GetPaths()` | Cumulative path segments (`{ "A", "A/B" }`) |
+| `SaveManager:SetPerGame(enabled)` | Toggle per-game namespacing (default **on**). `SetPerGame(false)` restores the flat pre-3.7 layout |
+| `SaveManager:SetGameKey(key)` | Override the game key (default `tostring(game.GameId)`; use a PlaceId to isolate sub-places; `nil` restores the default) |
+| `SaveManager:MigrateLegacyLayout()` | Move 3.6-era root files into the per-game namespace (called by `Bind`) |
+| `SaveManager:SetSubFolder(sub)` | Nest configs + profiles one level deeper, **under the game key** |
+| `SaveManager:GetPaths()` | Cumulative path segments (`{ "A", "A/<game>" }`) |
 | `SaveManager:BuildFolderTree(skipWhenCreated?)` | Create every missing folder incl. `profiles` |
 | `SaveManager:CheckFolderTree()` | `BuildFolderTree(true)` — cheap existence check |
 | `SaveManager:CheckSubFolder(create?)` | Sub-folder exists? / create it |
@@ -84,6 +96,8 @@ SaveManager:SetLoadingOrder(true, { "Toggle", "Dropdown", "Slider", "Input", "Ke
     "format": 2,
     "timestamp": "24.08.2026 14:02:11",
     "name": "my-config",
+    "game": "123456789",
+    "script": "MyHubConfigs",
     "objects": [
         { "idx": "SpeedToggle", "type": "Toggle",   "value": true },
         { "idx": "FOV",         "type": "Slider",    "value": 120 },

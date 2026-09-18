@@ -277,6 +277,8 @@ HWID-salted SHA-256 when `crypt.hash` exists; stores the hash, never the key.
 ### SaveManager
 ```lua
 SaveManager:Bind(EZ, "Configs")     -- or SetLibrary + SetFolder/SetSubFolder
+SaveManager:SetPerGame(enabled)     -- v3.7: per-game namespace (default on)
+SaveManager:SetGameKey(key)         -- v3.7: override the game key (PlaceId etc.)
 SaveManager:BuildConfigSection(sectionOrGroupbox, Window)
 SaveManager:Save("name") / Load / Delete / GetConfigs()
 SaveManager:SaveAutoloadConfig("name") / LoadAutoloadConfig() / DeleteAutoLoadConfig()
@@ -284,6 +286,8 @@ SaveManager:Export() / Import(str) / SaveJSON(name) / LoadJSON(json)
 SaveManager:BuildProfileUI(section, Window)   -- profiles (not auto-attached)
 ```
 Configs persist every registered element type; JSON import/export included.
+Since 3.7 configs, profiles and the autoload pointer are namespaced per game
+(`Folder/<game id>/…`) and 3.6-era files are migrated automatically on Bind.
 
 ### ThemeManager
 ```lua

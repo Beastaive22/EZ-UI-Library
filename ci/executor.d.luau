@@ -5,6 +5,7 @@ declare function writefile(path: string, contents: string): ()
 declare function readfile(path: string): string
 declare function isfile(path: string): boolean
 declare function delfile(path: string): ()
+declare function delfolder(path: string): ()
 declare function listfiles(path: string): { string }
 declare function isfolder(path: string): boolean
 declare function makefolder(path: string): ()

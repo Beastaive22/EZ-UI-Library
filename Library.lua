@@ -40,7 +40,7 @@ local EZ = {
     _destroyed = false,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.6.0"
+    _version = "3.7.0"
 }
 
 -- defaults
