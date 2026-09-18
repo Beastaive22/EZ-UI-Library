@@ -40,7 +40,7 @@ local EZ = {
     _destroyed = false,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.5.1"
+    _version = "3.6.0"
 }
 
 -- defaults
@@ -586,7 +586,23 @@ function EZ:Notify(opts)
     -- title instead of a colored edge (the old accent bar read as a bolt-on)
     addStroke(card, theme.Border, 1, 0.5)
 
-    -- type dot + title on one row
+    -- type indicator: a Lucide icon when the icon pack resolves one for the
+    -- type, else the small colored dot. The type also shows via color either way.
+    local typeIconCandidates = {
+        info = { "info", "circle-info" },
+        success = { "circle-check", "check-circle", "check" },
+        warning = { "triangle-alert", "alert-triangle", "alert" },
+        error = { "octagon-x", "x-octagon", "circle-x", "x-circle" },
+    }
+    local typeAsset
+    if self.ResolveIcon then
+        for _, cand in (typeIconCandidates[ntype] or typeIconCandidates.info) do
+            typeAsset = self:ResolveIcon(cand)
+            if typeAsset then break end
+        end
+    end
+
+    -- type icon/dot + title on one row
     local titleRow = create("Frame", {
         Size = UDim2.new(1, -24, 0, 18),
         Position = UDim2.new(0, 12, 0, 8),
@@ -602,15 +618,28 @@ function EZ:Notify(opts)
         }
     })
 
-    create("Frame", {
-        Size = UDim2.new(0, 6, 0, 6),
-        BackgroundColor3 = accentColor,
-        BorderSizePixel = 0,
-        LayoutOrder = 1,
-        ZIndex = 1,
-        Parent = titleRow,
-        Children = { create("UICorner", { CornerRadius = UDim.new(1, 0) }) }
-    })
+    if typeAsset then
+        create("ImageLabel", {
+            Size = UDim2.new(0, 13, 0, 13),
+            BackgroundTransparency = 1,
+            Image = typeAsset,
+            ImageColor3 = accentColor,
+            ScaleType = Enum.ScaleType.Fit,
+            LayoutOrder = 1,
+            ZIndex = 1,
+            Parent = titleRow,
+        })
+    else
+        create("Frame", {
+            Size = UDim2.new(0, 6, 0, 6),
+            BackgroundColor3 = accentColor,
+            BorderSizePixel = 0,
+            LayoutOrder = 1,
+            ZIndex = 1,
+            Parent = titleRow,
+            Children = { create("UICorner", { CornerRadius = UDim.new(1, 0) }) }
+        })
+    end
 
     create("TextLabel", {
         Size = UDim2.new(1, -12, 0, 18),
@@ -639,6 +668,64 @@ function EZ:Notify(opts)
         Parent = card
     })
 
+    -- shared dismiss used by auto-expiry and action buttons alike
+    local function dismissCard()
+        tween(card, {Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1}, 0.25)
+        task.delay(0.3, function()
+            local idx = table.find(EZ.Notifications, card)
+            if idx then table.remove(EZ.Notifications, idx) end
+            pcall(function() card:Destroy() end)
+        end)
+    end
+
+    -- optional action buttons (opts.Buttons = { {Text = "Open", Callback = fn} })
+    -- Taking an action dismisses the card; the callbacks safecall like
+    -- every other user callback.
+    local actionRow
+    if type(opts.Buttons) == "table" and #opts.Buttons > 0 then
+        actionRow = create("Frame", {
+            Size = UDim2.new(1, -24, 0, 22),
+            BackgroundTransparency = 1,
+            Parent = card,
+            Children = {
+                create("UIListLayout", {
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 6),
+                }),
+            }
+        })
+        for _, btn in opts.Buttons do
+            if type(btn) == "table" and btn.Text then
+                local b = create("TextButton", {
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    Size = UDim2.new(0, 0, 1, 0),
+                    BackgroundColor3 = theme.Panel,
+                    BackgroundTransparency = 0.35,
+                    Text = tostring(btn.Text),
+                    TextColor3 = theme.Text,
+                    TextSize = 11,
+                    Font = Enum.Font.Gotham,
+                    AutoButtonColor = false,
+                    BorderSizePixel = 0,
+                    LayoutOrder = #actionRow:GetChildren(),
+                    Parent = actionRow,
+                    Children = {
+                        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+                        create("UIPadding", {
+                            PaddingLeft = UDim.new(0, 8),
+                            PaddingRight = UDim.new(0, 8),
+                        }),
+                    }
+                })
+                b.MouseButton1Click:Connect(function()
+                    safecall("NotifyAction", btn.Callback or function() end)
+                    dismissCard()
+                end)
+            end
+        end
+    end
+
     table.insert(self.Notifications, card)
 
     -- Cap what is on screen. The holder is a fixed-width column driven by a
@@ -657,17 +744,14 @@ function EZ:Notify(opts)
     task.defer(function()
         if not card.Parent then return end
         local textH = math.max(contentLbl.TextBounds.Y, contentLbl.AbsoluteSize.Y, 14)
-        tween(card, {Size = UDim2.new(1, 0, 0, 30 + textH + 10)}, 0.3)
+        if actionRow then
+            actionRow.Position = UDim2.new(0, 12, 0, 28 + textH + 6)
+        end
+        tween(card, {Size = UDim2.new(1, 0, 0, 30 + textH + (actionRow and 28 or 0) + 10)}, 0.3)
     end)
 
     -- auto dismiss
-    task.delay(dur, function()
-        tween(card, {Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1}, 0.25)
-        task.wait(0.3)
-        local idx = table.find(EZ.Notifications, card)
-        if idx then table.remove(EZ.Notifications, idx) end
-        pcall(function() card:Destroy() end)
-    end)
+    task.delay(dur, dismissCard)
 
     return card
 end
@@ -1446,8 +1530,15 @@ function EZ:CreateWindow(opts)
     local tabW = opts.TabWidth or (mobile and 52 or 150)
 
     -- Restore last session's window geometry (position + size). Keyed by
-    -- title so parallel scripts don't fight over one file.
-    local geomFile = "EZGeom_" .. string.gsub(string.lower(string.gsub(opts.Title or "window", "[^%w]", "")), "^$", "window") .. ".txt"
+    -- title so parallel scripts don't fight over one file; titles that
+    -- differ only in punctuation would collide, so hosts can pass their
+    -- own GeometryId instead. The dock file follows the same key.
+    local geomKey = type(opts.GeometryId) == "string" and string.gsub(opts.GeometryId, "[^%w%-_]", "") or ""
+    if geomKey == "" then
+        geomKey = string.gsub(string.lower(string.gsub(opts.Title or "window", "[^%w]", "")), "^$", "window")
+    end
+    local geomFile = "EZGeom_" .. geomKey .. ".txt"
+    local dockFile = "EZDockPos_" .. geomKey .. ".txt"
     local savedPos
     if opts.PersistGeometry ~= false and not mobile then
         pcall(function()
@@ -1480,6 +1571,7 @@ function EZ:CreateWindow(opts)
         Tabs = {},
         ActiveTab = nil,
         Visible = true,
+        Title = opts.Title or "EZ",
         _flags = self.Flags,
         _theme = theme,
         _connections = {},
@@ -1943,6 +2035,7 @@ function EZ:CreateWindow(opts)
 
     -- close button
     local windowCloseBtn = create("TextButton", {
+        Name = "EZCloseBtn",
         Size = UDim2.new(0, 24, 0, 24),
         Position = UDim2.new(1, -36, 0.5, -12),
         BackgroundColor3 = theme.Panel,
@@ -2224,11 +2317,20 @@ function EZ:CreateWindow(opts)
     local pillH = tileS + dockPad * 2
     local pillW = dockPad * 2 + dockTiles * tileS + (dockTiles - 1) * dockGap
 
-    -- restore last dock position (shared file, last drag wins)
+    -- restore last dock position (per-window file so parallel scripts and
+    -- multi-window hosts don't fight over one spot; falls back to the
+    -- pre-3.6 shared EZDockPos.txt so existing users keep their parked dock)
     local dockSavedPos
     pcall(function()
-        if isfile and readfile and isfile("EZDockPos.txt") then
-            local raw = readfile("EZDockPos.txt")
+        local raw
+        if isfile and readfile then
+            if isfile(dockFile) then
+                raw = readfile(dockFile)
+            elseif isfile("EZDockPos.txt") then
+                raw = readfile("EZDockPos.txt")
+            end
+        end
+        if raw then
             local px, py = tostring(raw):match("pos=(%-?%d+),(%-?%d+)")
             if px and py then dockSavedPos = UDim2.fromOffset(tonumber(px), tonumber(py)) end
         end
@@ -2339,7 +2441,7 @@ function EZ:CreateWindow(opts)
     local function saveDockPos()
         pcall(function()
             if writefile then
-                writefile("EZDockPos.txt", ("pos=%d,%d"):format(
+                writefile(dockFile, ("pos=%d,%d"):format(
                     math.floor(togglePill.Position.X.Offset + 0.5),
                     math.floor(togglePill.Position.Y.Offset + 0.5)))
             end
@@ -2552,8 +2654,14 @@ function EZ:CreateWindow(opts)
 
     -- close / minimize
     trackConnection(windowCloseBtn.MouseButton1Click, function()
-        -- full nuke: window + watermark + toggle pill + listeners + all EZ stuff
-        EZ:Destroy()
+        -- default (back-compat): the X is a full nuke — window + watermark +
+        -- toggle pill + listeners + all EZ state. Hosts that want the X to
+        -- close just this window opt into CloseBehavior = "window".
+        if opts.CloseBehavior == "window" then
+            window:Destroy()
+        else
+            EZ:Destroy()
+        end
     end)
     trackConnection(minBtn.MouseButton1Click, function()
         window:Hide()
@@ -3276,9 +3384,10 @@ function EZ:CreateWindow(opts)
             section.Frame = sectionFrame
 
             -- elements container
+            local sectionHeaderH = (not chromeless and opts2.Description ~= nil) and 44 or 30
             local elemContainer = create("Frame", {
                 Size = UDim2.new(1, 0, 0, 0),
-                Position = chromeless and UDim2.new(0, 0, 0, 0) or UDim2.new(0, 0, 0, 30),
+                Position = chromeless and UDim2.new(0, 0, 0, 0) or UDim2.new(0, 0, 0, sectionHeaderH),
                 BackgroundTransparency = 1,
                 AutomaticSize = Enum.AutomaticSize.Y,
                 ZIndex = 5,
@@ -3304,7 +3413,7 @@ function EZ:CreateWindow(opts)
 
                 -- section header
                 local sectionHeader = create("TextButton", {
-                    Size = UDim2.new(1, 0, 0, 30),
+                    Size = UDim2.new(1, 0, 0, sectionHeaderH),
                     BackgroundTransparency = 1,
                     Text = "",
                     ZIndex = 6,
@@ -3332,7 +3441,7 @@ function EZ:CreateWindow(opts)
                 end
 
                 create("TextLabel", {
-                    Size = UDim2.new(1, -(labelX + 20), 1, 0),
+                    Size = UDim2.new(1, -(labelX + 20), 0, 30),
                     Position = UDim2.new(0, labelX, 0, 0),
                     BackgroundTransparency = 1,
                     Text = sectionName or "Section",
@@ -3343,6 +3452,23 @@ function EZ:CreateWindow(opts)
                     ZIndex = 7,
                     Parent = sectionHeader
                 })
+
+                -- muted description line under the title (opts2.Description)
+                if opts2.Description then
+                    create("TextLabel", {
+                        Size = UDim2.new(1, -(labelX + 20), 0, 12),
+                        Position = UDim2.new(0, labelX, 0, 30),
+                        BackgroundTransparency = 1,
+                        Text = tostring(opts2.Description),
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        TextColor3 = theme.TextMuted,
+                        TextSize = 10,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        ZIndex = 7,
+                        Parent = sectionHeader
+                    })
+                end
 
                 -- arrow (chevron icon when an icon pack is bound, "v" fallback)
                 local chevron = EZ:ResolveIcon("chevron-down")
@@ -3388,15 +3514,16 @@ function EZ:CreateWindow(opts)
                 local value = opts.Default or false
                 local cb = opts.Callback or function() end
 
+                local hasDesc = opts.Description ~= nil
                 local elem = create("Frame", {
-                    Size = UDim2.new(1, 0, 0, mobile and 38 or 32),
+                    Size = UDim2.new(1, 0, 0, (mobile and 38 or 32) + (hasDesc and 13 or 0)),
                     BackgroundTransparency = 1,
                     ZIndex = 6,
                     Parent = elemContainer
                 })
 
                 create("TextLabel", {
-                    Size = UDim2.new(1, -56, 1, 0),
+                    Size = UDim2.new(1, -56, 0, hasDesc and 16 or (mobile and 38 or 32)),
                     BackgroundTransparency = 1,
                     Text = opts.Text or id,
                     TextTruncate = Enum.TextTruncate.AtEnd,
@@ -3407,6 +3534,23 @@ function EZ:CreateWindow(opts)
                     ZIndex = 7,
                     Parent = elem
                 })
+
+                -- muted second line under the label (opts.Description)
+                if hasDesc then
+                    create("TextLabel", {
+                        Size = UDim2.new(1, -56, 0, 11),
+                        Position = UDim2.new(0, 0, 0, 17),
+                        BackgroundTransparency = 1,
+                        Text = tostring(opts.Description),
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        TextColor3 = theme.TextDim,
+                        TextSize = 10,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        ZIndex = 7,
+                        Parent = elem
+                    })
+                end
 
                 -- toggle track
                 local track = create("Frame", {
@@ -3514,7 +3658,8 @@ function EZ:CreateWindow(opts)
                 end
                 -- NaN survives `or` (it is truthy), so guard it explicitly
                 -- or a NaN Default would clamp straight to Max
-                local d = tonumber(opts.Default); value = clamp((d == d and d) or min, min, max)
+                local d = tonumber(opts.Default)
+                local value = clamp((d == d and d) or min, min, max)
                 local cb = opts.Callback or function() end
 
                 local elem = create("Frame", {
@@ -3537,7 +3682,10 @@ function EZ:CreateWindow(opts)
                     Parent = elem
                 })
 
-                local valLabel = create("TextLabel", {
+                -- value label doubles as a click-to-edit button (typed exact
+                -- values commit through the same clamp/snap as dragging)
+                local valLabel = create("TextButton", {
+                    Name = "EZSliderValue",
                     Size = UDim2.new(0.4, 0, 0, 16),
                     Position = UDim2.new(0.6, 0, 0, 0),
                     BackgroundTransparency = 1,
@@ -3546,6 +3694,8 @@ function EZ:CreateWindow(opts)
                     TextSize = 12,
                     Font = Enum.Font.GothamBold,
                     TextXAlignment = Enum.TextXAlignment.Right,
+                    AutoButtonColor = false,
+                    BorderSizePixel = 0,
                     ZIndex = 7,
                     Parent = elem
                 })
@@ -3608,6 +3758,61 @@ function EZ:CreateWindow(opts)
 
                 -- interaction
                 local sliding = false
+
+                -- click the value label to type an exact value; Enter or
+                -- clicking away commits through update() (clamp + snap +
+                -- callback), unparseable input just restores the label
+                local editing = false
+                trackConnection(valLabel.MouseButton1Click, function()
+                    if editing or sliding then return end
+                    editing = true
+                    local box = create("TextBox", {
+                        Name = "EZSliderEdit",
+                        Size = valLabel.Size,
+                        Position = valLabel.Position,
+                        BackgroundTransparency = 1,
+                        Text = fmtVal(value),
+                        PlaceholderText = ("%g-%g"):format(min, max),
+                        TextColor3 = theme.Accent,
+                        PlaceholderColor3 = theme.TextMuted,
+                        TextSize = 12,
+                        Font = Enum.Font.GothamBold,
+                        TextXAlignment = Enum.TextXAlignment.Right,
+                        ClearTextOnFocus = false,
+                        ZIndex = 11,
+                        Parent = elem
+                    })
+                    box:CaptureFocus()
+                    local done = false
+                    local armed = false
+                    local function commit()
+                        if done or not armed then return end
+                        done = true
+                        editing = false
+                        local n = tonumber(box.Text)
+                        box:Destroy()
+                        if n then
+                            update(n)
+                        else
+                            valLabel.Text = fmtVal(value) .. suffix
+                        end
+                    end
+                    -- the opening click steals focus for a beat; arm the
+                    -- commit listener a frame later so the editor isn't
+                    -- killed by its own opening click
+                    task.defer(function()
+                        if done or not box.Parent then return end
+                        armed = true
+                        box:CaptureFocus()
+                    end)
+                    trackConnection(box.FocusLost, commit)
+                    box.Destroying:Connect(function()
+                        done, editing = true, false
+                    end)
+                end)
+
+                -- interaction (sliding declared before the editor above so
+                -- the editor's click guard reads the real upvalue)
                 local clickArea = create("TextButton", {
                     Size = UDim2.new(1, 0, 0, 20),
                     Position = UDim2.new(0, 0, 0, mobile and 20 or 16),
@@ -3744,6 +3949,18 @@ function EZ:CreateWindow(opts)
                 -- the value is what renders. Disabled options are dimmed and
                 -- unclickable: opts.Disabled = {["B"] = true} or {"B"}.
                 local values, displayOf, disabledOf = {}, {}, {}
+                local disabledSpec = opts.Disabled
+                -- shared Disabled parser: map form {B = true} or array {"B"}
+                local function applyDisabled(d, into)
+                    if typeof(d) ~= "table" then return end
+                    for k, v in d do
+                        if type(k) == "string" and v == true then into[k] = true
+                        elseif v == true or v == nil then into[k] = true end
+                    end
+                    for _, v in d do
+                        if type(v) ~= "boolean" then into[v] = true end
+                    end
+                end
                 do
                     local src = opts.Values or {}
                     local isDict = false
@@ -3759,27 +3976,39 @@ function EZ:CreateWindow(opts)
                     else
                         for _, v in src do table.insert(values, v) end
                     end
-                    local d = opts.Disabled
-                    if typeof(d) == "table" then
-                        for k, v in d do
-                            if type(k) == "string" and v == true then disabledOf[k] = true
-                            elseif v == true or v == nil then disabledOf[k] = true end
-                        end
-                        -- array form: {"B"} iterates k=1, v="B"
-                        for _, v in d do
-                            if type(v) ~= "boolean" then disabledOf[v] = true end
-                        end
-                    end
+                    applyDisabled(disabledSpec, disabledOf)
                 end
 
                 local function displayOfVal(v)
                     return displayOf[v] or tostring(v)
                 end
 
-                local selected = multi and {} or (opts.Default or (values[1] or ""))
+                -- multi selections are stored as a {key = true} map. Accept a
+                -- map, an array of keys, or a bare scalar so :Set can never
+                -- hand getDisplayText a string to iterate (it used to crash
+                -- with "attempt to iterate over a string value").
+                local function normalizeSelection(input)
+                    if not multi then return input end
+                    local map = {}
+                    if type(input) ~= "table" then
+                        if input ~= nil then map[input] = true end
+                        return map
+                    end
+                    for k, v in input do
+                        if type(k) == "number" then
+                            if v ~= nil then map[v] = true end
+                        elseif v == true then
+                            map[k] = true
+                        end
+                    end
+                    return map
+                end
 
-                if multi and opts.Default then
-                    for _, v in opts.Default do selected[v] = true end
+                local selected
+                if multi then
+                    selected = normalizeSelection(opts.Default)
+                else
+                    selected = opts.Default or (values[1] or "")
                 end
 
                 local hasTitle = opts.Text ~= nil
@@ -3816,7 +4045,13 @@ function EZ:CreateWindow(opts)
                             if v then table.insert(items, displayOfVal(k)) end
                         end
                         table.sort(items) -- deterministic label order
-                        return #items > 0 and table.concat(items, ", ") or (opts.Text or "Select...")
+                        if #items == 0 then return opts.Text or "Select..." end
+                        -- long selections collapse to "A, B +N more" so the
+                        -- header stays readable
+                        if #items > 2 then
+                            return ("%s, %s +%d more"):format(items[1], items[2], #items - 2)
+                        end
+                        return table.concat(items, ", ")
                     else
                         return displayOfVal(selected)
                     end
@@ -3956,13 +4191,70 @@ function EZ:CreateWindow(opts)
 
                 local function refreshItems()
                     -- rebuilding the rows resets CanvasPosition; remember and
-                    -- restore it so multi-select taps don't jump the scroll
+                    -- restore it so multi-select taps don't jump the scroll.
+                    -- TextButtons AND Frames are cleared: the bulk row below
+                    -- is a Frame, so clearing buttons only used to stack a
+                    -- fresh Select all/Clear row on every refresh.
                     local keepScroll = dropList.CanvasPosition
                     for _, c in dropList:GetChildren() do
-                        if c:IsA("TextButton") then c:Destroy() end
+                        if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end
                     end
 
                     local term = string.lower(searchTerm or "")
+
+                    -- multi dropdowns get a Select all / Clear row pinned to
+                    -- the top of the open list (disabled values stay excluded)
+                    if multi then
+                        local bulk = create("Frame", {
+                            Name = "EZBulkRow",
+                            Size = UDim2.new(1, 0, 0, mobile and 30 or 24),
+                            BackgroundTransparency = 1,
+                            ZIndex = 22,
+                            Parent = dropList,
+                            Children = {
+                                create("UIListLayout", {
+                                    FillDirection = Enum.FillDirection.Horizontal,
+                                    Padding = UDim.new(0, 4),
+                                }),
+                            }
+                        })
+                        local function bulkBtn(text, apply)
+                            local b = create("TextButton", {
+                                Size = UDim2.new(0.5, -2, 1, 0),
+                                BackgroundColor3 = theme.Panel,
+                                BackgroundTransparency = 0.75,
+                                Text = text,
+                                TextColor3 = theme.TextDim,
+                                TextSize = 11,
+                                Font = Enum.Font.Gotham,
+                                AutoButtonColor = false,
+                                BorderSizePixel = 0,
+                                ZIndex = 23,
+                                Parent = bulk
+                            })
+                            addCorner(b, 4)
+                            -- rebuilt on every refresh like value rows, so
+                            -- connect directly (see the note below)
+                            b.MouseButton1Click:Connect(function()
+                                apply()
+                                headerLabel.Text = getDisplayText()
+                                if dropdown then dropdown.Value = selected end
+                                EZ.Flags[id] = selected
+                                fireListeners(id, selected)
+                                refreshItems()
+                                safecall(`Dropdown:{id}`, cb, selected)
+                            end)
+                        end
+                        bulkBtn("Select all", function()
+                            for _, val in values do
+                                if not disabledOf[val] then selected[val] = true end
+                            end
+                        end)
+                        bulkBtn("Clear", function()
+                            table.clear(selected)
+                        end)
+                    end
+
                     for _, val in values do
                         local display = displayOfVal(val)
                         if term == "" or string.find(string.lower(display), term, 1, true) ~= nil then
@@ -4066,6 +4358,14 @@ function EZ:CreateWindow(opts)
                 end
                 ddEntry = { close = closeDrop, list = dropFrame, header = header }
 
+                -- the open list is hosted in the root ScreenGui, so it must
+                -- be registered like picker/dialog popups: on window Hide or
+                -- Destroy, closePopups() docks (or destroys) it — an open
+                -- list used to leak at the gui root if the window died while
+                -- the dropdown was open, still showing its Select all/Clear
+                -- row on top of whatever came next.
+                registerPopup(dropFrame, closeDrop)
+
                 trackConnection(header.MouseButton1Click, function()
                     if open then
                         closeDrop()
@@ -4127,7 +4427,7 @@ function EZ:CreateWindow(opts)
                 -- loading a saved config updated the label but never told the
                 -- script the value had changed.
                 function dropdown:Set(v, silent)
-                    selected = v
+                    selected = normalizeSelection(v)
                     self.Value = selected
                     headerLabel.Text = getDisplayText()
                     EZ.Flags[id] = selected
@@ -4135,9 +4435,11 @@ function EZ:CreateWindow(opts)
                     refreshItems()
                     if not silent then safecall(`Dropdown:{id}`, cb, selected) end
                 end
-                function dropdown:Refresh(newValues)
+                function dropdown:Refresh(newValues, newDisabled)
                     -- re-normalize so Refresh accepts arrays AND dictionaries,
-                    -- matching the constructor
+                    -- matching the constructor. Previously requested Disabled
+                    -- entries survive the refresh unless newDisabled replaces
+                    -- them (the old behavior silently dropped them all).
                     values, displayOf, disabledOf = {}, {}, {}
                     local src = newValues or {}
                     local isDict = false
@@ -4153,6 +4455,7 @@ function EZ:CreateWindow(opts)
                     else
                         for _, v in src do table.insert(values, v) end
                     end
+                    applyDisabled(newDisabled or disabledSpec, disabledOf)
                     refreshItems()
                 end
                 function dropdown:Get() return selected end
@@ -4593,7 +4896,7 @@ function EZ:CreateWindow(opts)
 
                 EZ.Flags[id] = key
 
-                keybind = { Value = key, Active = active, _type = "Keybind" }
+                keybind = { Value = key, Active = active, _type = "Keybind", _windowTitle = window.Title or "EZ" }
                 function keybind:Set(k)
                     -- accepts EnumItems and strings ("G", "MouseButton2",
                     -- "Enum.UserInputType.MouseButton1"); config restores can
@@ -4934,6 +5237,102 @@ function EZ:CreateWindow(opts)
                     if not silent then safecall(`ColorPicker:{id}`, cb, color) end
                 end
 
+                -- preset palette (opts.Palette = {Color3, ...}) + session
+                -- recents (last 6 deliberate picks; not persisted)
+                local paletteColors = {}
+                if type(opts.Palette) == "table" then
+                    for _, c in opts.Palette do
+                        if typeof(c) == "Color3" then table.insert(paletteColors, c) end
+                    end
+                end
+                EZ._recentColors = EZ._recentColors or {}
+                local function pushRecent(c)
+                    local list = EZ._recentColors
+                    for i = #list, 1, -1 do
+                        if list[i] == c then table.remove(list, i) end
+                    end
+                    table.insert(list, 1, c)
+                    if #list > 6 then table.remove(list) end
+                end
+
+                local function buildSwatchRow(y, colors)
+                    if #colors == 0 then return 0 end
+                    local row = create("Frame", {
+                        Size = UDim2.new(1, -16, 0, 16),
+                        Position = UDim2.new(0, 8, 0, y),
+                        BackgroundTransparency = 1,
+                        ZIndex = 32,
+                        Parent = pickerFrame,
+                        Children = {
+                            create("UIListLayout", {
+                                FillDirection = Enum.FillDirection.Horizontal,
+                                Padding = UDim.new(0, 4),
+                            }),
+                        }
+                    })
+                    for _, c in colors do
+                        local sw = create("TextButton", {
+                            Size = UDim2.new(0, 16, 0, 16),
+                            BackgroundColor3 = c,
+                            Text = "",
+                            BorderSizePixel = 0,
+                            AutoButtonColor = false,
+                            ZIndex = 33,
+                            Parent = row,
+                            Children = { create("UICorner", { CornerRadius = UDim.new(0, 4) }) }
+                        })
+                        addStroke(sw, theme.Border, 1, 0.5)
+                        sw.MouseButton1Click:Connect(function()
+                            h, s, v = Color3.toHSV(c)
+                            updateColor()
+                        end)
+                    end
+                    return 22
+                end
+
+                local palExtra = buildSwatchRow(222, paletteColors)
+                local recentsRow
+                if palExtra > 0 then
+                    recentsRow = create("Frame", {
+                        Name = "EZRecentColors",
+                        Size = UDim2.new(1, -16, 0, 16),
+                        Position = UDim2.new(0, 8, 0, 222 + palExtra),
+                        BackgroundTransparency = 1,
+                        ZIndex = 32,
+                        Parent = pickerFrame,
+                        Children = {
+                            create("UIListLayout", {
+                                FillDirection = Enum.FillDirection.Horizontal,
+                                Padding = UDim.new(0, 4),
+                            }),
+                        }
+                    })
+                end
+                local function refreshRecents()
+                    if not recentsRow then return 0 end
+                    for _, c in recentsRow:GetChildren() do
+                        if c:IsA("TextButton") then c:Destroy() end
+                    end
+                    for _, c in EZ._recentColors do
+                        local sw = create("TextButton", {
+                            Size = UDim2.new(0, 16, 0, 16),
+                            BackgroundColor3 = c,
+                            Text = "",
+                            BorderSizePixel = 0,
+                            AutoButtonColor = false,
+                            ZIndex = 33,
+                            Parent = recentsRow,
+                            Children = { create("UICorner", { CornerRadius = UDim.new(0, 4) }) }
+                        })
+                        addStroke(sw, theme.Border, 1, 0.5)
+                        sw.MouseButton1Click:Connect(function()
+                            h, s, v = Color3.toHSV(c)
+                            updateColor()
+                        end)
+                    end
+                    return #EZ._recentColors > 0 and 22 or 0
+                end
+
                 -- canvas drag (claims mutex so slider underneath stays still)
                 local canvasDrag = false
                 trackConnection(canvas.InputBegan, function(inp)
@@ -5079,6 +5478,7 @@ function EZ:CreateWindow(opts)
                 local function closePicker(instant)
                     if not pickerOpen then return end
                     pickerOpen = false
+                    pcall(pushRecent, color)
                     if pickerScrollConn then
                         pickerScrollConn:Disconnect()
                         pickerScrollConn = nil
@@ -5109,7 +5509,8 @@ function EZ:CreateWindow(opts)
                     local py = clamp(absPos.Y - guiOff.Y + absSize.Y + 4, 4, math.max(4, screenSize.Y - 232))
                     pickerFrame.Position = UDim2.new(0, px, 0, py)
                     pickerFrame.Visible = true
-                    tween(pickerFrame, {Size = UDim2.new(0, 200, 0, 222)}, 0.2)
+                    local recentExtra = refreshRecents()
+                    tween(pickerFrame, {Size = UDim2.new(0, 200, 0, 222 + palExtra + recentExtra)}, 0.2)
 
                     -- same scroll-away guard the floating dropdown lists use
                     local owner = swatch
@@ -5183,6 +5584,7 @@ function EZ:CreateWindow(opts)
                     Size = UDim2.new(1, 0, 0, 18),
                     BackgroundTransparency = 1,
                     Text = tostring(text or ""),
+                    RichText = opts and opts.RichText == true or false,
                     TextColor3 = theme.TextDim,
                     TextSize = 11,
                     Font = Enum.Font.Gotham,
@@ -5251,6 +5653,7 @@ function EZ:CreateWindow(opts)
                     Position = UDim2.new(0, 0, 0, opts.Title and 18 or 0),
                     BackgroundTransparency = 1,
                     Text = opts.Content or "",
+                    RichText = opts.RichText == true,
                     TextColor3 = theme.TextDim,
                     TextSize = 11,
                     Font = Enum.Font.Gotham,
@@ -5550,8 +5953,8 @@ function EZ:CreateWindow(opts)
             return section
         end
 
-        function tab:AddSection(sectionName)
-            return createSection(sectionName, tabContent)
+        function tab:AddSection(sectionName, description)
+            return createSection(sectionName, tabContent, { Description = description })
         end
 
         -- ~~----
@@ -5597,14 +6000,14 @@ function EZ:CreateWindow(opts)
             tab._groupCols = { makeColumn(1), makeColumn(2) }
         end
 
-        function tab:AddGroupbox(side, name, icon)
+        function tab:AddGroupbox(side, name, icon, description)
             side = string.lower(tostring(side or "left"))
             ensureGroupColumns()
             local col = (side == "right") and tab._groupCols[2] or tab._groupCols[1]
-            return createSection(name, col, { icon = icon })
+            return createSection(name, col, { icon = icon, Description = description })
         end
-        function tab:AddLeftGroupbox(name, icon) return tab:AddGroupbox("left", name, icon) end
-        function tab:AddRightGroupbox(name, icon) return tab:AddGroupbox("right", name, icon) end
+        function tab:AddLeftGroupbox(name, icon, description) return tab:AddGroupbox("left", name, icon, description) end
+        function tab:AddRightGroupbox(name, icon, description) return tab:AddGroupbox("right", name, icon, description) end
 
         tab.AddSection = owned(tab.AddSection)
         tab.AddSubTab = owned(tab.AddSubTab)
@@ -6309,24 +6712,54 @@ function EZ:CreateKeybindMenu()
             if child:IsA("Frame") then child:Destroy() end
         end
 
-        -- deterministic order
-        local ids = {}
-        -- NOTE: EZ._elements, not self._elements - self is the menu object
+        -- group rows by the window that owns each keybind (single-window
+        -- hosts see no headers); within a group, sorted by id
+        local groups, order = {}, {}
         for id, el in EZ._elements do
-            if el._type == "Keybind" then table.insert(ids, id) end
+            if el._type == "Keybind" then
+                local g = el._windowTitle or "Keybinds"
+                if not groups[g] then
+                    groups[g] = {}
+                    table.insert(order, g)
+                end
+                table.insert(groups[g], { id = id, el = el })
+            end
         end
-        table.sort(ids, function(a, b) return a < b end)
+        table.sort(order, function(a, b) return a < b end)
+        for _, g in order do
+            table.sort(groups[g], function(a, b) return a.id < b.id end)
+        end
 
-        for i, id in ids do
-            local el = EZ._elements[id]
-            local row = create("Frame", {
-                LayoutOrder = i,
-                Size = UDim2.new(1, 0, 0, 22),
-                BackgroundTransparency = 1,
-                ClipsDescendants = true,
-                ZIndex = 182,
-                Parent = rows
-            })
+        local rowIdx = 0
+        local multiWindow = #order > 1
+        for _, g in order do
+            if multiWindow then
+                rowIdx += 1
+                create("TextLabel", {
+                    LayoutOrder = rowIdx,
+                    Size = UDim2.new(1, 0, 0, 18),
+                    BackgroundTransparency = 1,
+                    Text = tostring(g),
+                    TextColor3 = theme.TextMuted,
+                    TextSize = 10,
+                    Font = Enum.Font.GothamBold,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    ZIndex = 183,
+                    Parent = rows
+                })
+            end
+            for _, entry in groups[g] do
+                rowIdx += 1
+                local el = entry.el
+                local id = entry.id
+                local row = create("Frame", {
+                    LayoutOrder = rowIdx,
+                    Size = UDim2.new(1, 0, 0, 22),
+                    BackgroundTransparency = 1,
+                    ClipsDescendants = true,
+                    ZIndex = 182,
+                    Parent = rows
+                })
             local isActive = el.IsActive and el:IsActive()
             if el.GetMode and el:GetMode() == "Toggle" then
                 create("Frame", {
@@ -6388,6 +6821,7 @@ function EZ:CreateKeybindMenu()
             local fn = function() task.defer(function() menu:_refresh() end) end
             EZ:OnFlagChanged(id, fn)
             table.insert(menu._listeners, { id = id, fn = fn })
+            end
         end
     end
 

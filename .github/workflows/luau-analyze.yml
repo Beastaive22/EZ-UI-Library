@@ -1,0 +1,43 @@
+name: luau-analyze
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install luau-lsp
+        run: |
+          curl -sL -o luau-lsp.zip https://github.com/JohnnyMorganz/luau-lsp/releases/latest/download/luau-lsp-linux-x86_64.zip
+          unzip -o luau-lsp.zip
+          chmod +x luau-lsp
+
+      - name: Download Roblox global types
+        run: |
+          curl -sL -o globalTypes.d.luau https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/main/scripts/globalTypes.d.luau
+
+      - name: Analyze (fail on syntax errors and accidental globals)
+        run: |
+          out=$(./luau-lsp analyze \
+            --definitions=globalTypes.d.luau \
+            --definitions=ci/executor.d.luau \
+            Library.lua \
+            addons/SaveManager.lua \
+            addons/ThemeManager.lua \
+            addons/QuickBar.lua \
+            addons/NotificationHistory.lua \
+            addons/Icons.lua \
+            tests/live/api-test.luau \
+            tests/live/showcase.luau 2>&1) || true
+          echo "$out" | tee analyze.log
+          if echo "$out" | grep -q "SyntaxError"; then
+            echo "::error::Syntax errors detected"; exit 1
+          fi
+          if echo "$out" | grep -q "Unknown global"; then
+            echo "::error::Unknown globals detected — a variable was written without `local` (see the slider `value` leak this CI caught in 3.6)"; exit 1
+          fi

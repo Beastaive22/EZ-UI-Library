@@ -1,5 +1,62 @@
 # Changelog
 
+## 3.6.0
+
+Correctness sweep (live-verified against an executor client), a batch of
+quality-of-life features, and the first in-repo test/CI infrastructure.
+
+### Added
+- **Slider text entry** — click a slider's value label to type an exact value;
+  commits through the same clamp/snap/callback path as dragging. Enter or
+  clicking away commits; unparseable input restores the label.
+- **Toggle descriptions** — `AddToggle(id, { Description = "..." })` renders a
+  muted second line under the label.
+- **Section/groupbox descriptions** — `AddSection(name, description?)`,
+  `AddLeftGroupbox(name, icon?, description?)` etc.
+- **Dropdown multi polish** — long selections collapse to `"A, B +N more"` in
+  the header; open lists get a **Select all / Clear** row (disabled values
+  excluded).
+- **Notification actions** — `EZ:Notify({ Buttons = { {Text, Callback} } })`
+  renders action buttons on the card (taking an action dismisses it); types
+  now show a Lucide icon when the icon pack resolves one, with the colored dot
+  as fallback.
+- **RichText** — `AddLabel({ RichText = true })` / `AddParagraph({ RichText = true })`.
+- **ColorPicker palette + recents** — `opts.Palette = {Color3...}` swatch row
+  in the popup plus the last 6 deliberate picks (session-only).
+- **Keybind menu grouping** — rows group under their owning window's name when
+  two or more windows have keybinds.
+- **Window options** — `GeometryId` (stable persistence key, immune to title
+  punctuation changes) and `CloseBehavior = "window"` (X closes just that
+  window; default keeps the full-`EZ:Destroy()` nuke).
+- `LICENSE` (MIT), `tests/` live harness + showcase, luau-analyze CI.
+
+### Fixed
+- **Multi dropdown `:Set` crash** — passing a scalar (or array) crashed the
+  header refresh with "attempt to iterate over a string value"; `Set` now
+  normalizes map/array/scalar, and a map-form `Default` stores correctly
+  (it used to write a `true` key).
+- **Dropdown `Refresh` silently dropped `Disabled`** — previously requested
+  disabled entries survive a refresh unless `Refresh(newValues, disabled)`
+  replaces them.
+- **Slider leaked a global `value`** across every slider in the environment.
+- **Dock position fought across windows/scripts** — the minimize dock now
+  saves per-window (`EZDockPos_<key>.txt`), falling back to the old shared
+  `EZDockPos.txt` for migration. Geometry files follow the same `GeometryId`.
+- **Dropdown bulk row duplicated** — the Select all/Clear row is a Frame, but
+  `refreshItems` only cleared TextButton children, so every refresh (item tap,
+  search keystroke) stacked another bulk row. Both are cleared now.
+- **Open dropdown lists leaked on window teardown** — the floating list lives
+  in the root ScreenGui but was never registered as a popup, so a window
+  destroyed (or hidden) with a dropdown open left the list stranded on screen,
+  still showing its bulk row. Dropdown lists now register via the same popup
+  registry pickers/dialogs use.
+
+### Docs
+- Documented `KeySystem`'s `GetKeyText` option and its blocking behavior,
+  `CheckForUpdate`'s return shape, the multi-dropdown `Set` map rule, the
+  `AddButton` TextButton return, and the ProgressBar's lack of a Callback
+  option. `CONTRIBUTING.md` documents the element touch-point checklist.
+
 ## 3.5.1
 
 Maintenance release: input-lifecycle, geometry and persistence fixes from a

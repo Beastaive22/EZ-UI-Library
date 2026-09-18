@@ -1,7 +1,7 @@
 # EZ UI Library — API Reference
 
 Complete reference for `Library.lua` + official addons. Everything here is
-verified against the current build (v3.5.0+).
+verified against the current build (**v3.6.0**, live-tested on an executor client).
 
 ```
 local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Library.lua"))()
@@ -25,6 +25,8 @@ local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive2
 | `Gestures` | `true` | Mobile swipe-to-switch-tabs |
 | `AutoSettings` | `true` | Auto-attach the Settings tab (see [AUTO_SETTINGS.md](AUTO_SETTINGS.md)) |
 | `PersistGeometry` | `true` | Remember window position + size across rejoins |
+| `GeometryId` | title slug | Stable persistence key for geometry/dock files — use it when two scripts could share a title, or when the title contains punctuation (the slug strips it) |
+| `CloseBehavior` | `"library"` | `"library"`: the X button nukes the whole library (`EZ:Destroy()`). `"window"`: the X destroys only this window (addons/listeners stay) |
 
 ### Window methods
 
@@ -122,11 +124,14 @@ and appear in header search — Log supports neither. Handles share
 `:Set(v [, silent])`, `:Get()`, `:OnChanged(fn)` where meaningful.
 Duplicate ids warn (last wins config save/load).
 
-### AddToggle(id, {Text, Default, Callback}) -> handle
-`Set(bool)` / `Get()` / `OnChanged(fn)`.
+### AddToggle(id, {Text, Default, Description, Callback}) -> handle
+`Set(bool)` / `Get()` / `OnChanged(fn)`. `Description` renders a muted second
+line under the label.
 
 ### AddSlider(id, {Text, Min, Max, Default, Increment, Suffix, Callback}) -> handle
 Clamped + snapped; decimal steps render cleanly. `Set(n)` / `Get()`.
+**Click the value label to type an exact value** — commits through the same
+clamp/snap/callback path as dragging; unparseable input restores the label.
 
 ### AddButton({Text, Callback, Tooltip, VisibleWhen})
 
@@ -141,7 +146,13 @@ Clamped + snapped; decimal steps render cleanly. `Set(n)` / `Get()`.
 | `Disabled` | `{Value = true}` (or array) — dimmed, unclickable entries |
 | `Callback` | `(value)` |
 
-Handle: `Set(v [, silent])`, `Get()`, `Refresh(newValues)` (accepts either shape again).
+Handle: `Set(v [, silent])`, `Get()`, `Refresh(newValues [, disabled])` (accepts
+either shape again; previously requested `Disabled` entries survive a refresh
+unless the second argument replaces them). **`Set` on a Multi dropdown takes a
+map** (`{Value = true}`) — arrays and bare scalars are normalized, but a raw
+string crashed pre-3.6. Open multi lists get a Select all / Clear row
+(disabled values excluded), and long selections collapse the header to
+`"A, B +N more"`.
 
 ### AddInput(id, {Text, Placeholder, Default, Callback}) -> handle
 Callback `(text, enterPressed)`. `Set(text [, silent])` / `Get()`.
@@ -173,13 +184,18 @@ Handle: `Set(k)` (accepts `"G"`, `"MouseButton2"`, `"Enum.KeyCode.G"`), `Get()`,
 `IsActive()`, `SetActive(bool)`, `Configure({Key, Mode, Modifiers})`,
 `GetMode()`, `GetModifiers()`. Flag = plain EnumItem; SaveManager round-trips it.
 
-### AddColorPicker(id, {Text, Default, Transparency, Callback}) -> handle
+### AddColorPicker(id, {Text, Default, Transparency, Palette, Callback}) -> handle
 HSV canvas + hue + transparency ramp + **hex box + RGB box + Copy/Paste color**.
 Closes on outside click and on page scroll. `Set(Color3)`, `Get()`,
 `SetTransparency(0-1)`, `GetTransparency()`. Flag stays a plain Color3.
+`Palette = {Color3, ...}` renders a preset-swatch row in the popup, and the
+last 6 deliberate picks are remembered for the session (not persisted).
 
 ### AddLabel(textOrOpts) / AddDivider() / AddParagraph({Title, Content})
-Labels/paragraphs accept `{Text/Title/Content, Tooltip, VisibleWhen}`; handles expose `:Set(text)`.
+Labels/paragraphs accept `{Text/Title/Content, Tooltip, VisibleWhen, RichText}`;
+handles expose `:Set(text)`. `RichText = true` opts the label into Roblox
+RichText markup (`<b>`, `<font color="#...">`, ...) — opt-in only, never set it
+for user-typed content.
 
 ### AddProgressBar(id, {Text, Default, Max, Color, ShowText}) -> handle
 `Set(v)` / `Get()` / `SetMax(m)` / `SetColor(Color3)`.
@@ -196,11 +212,17 @@ join/leave. `dd:GetPlayers()` resolves the selection to Player instances.
 ## 5. Notifications
 
 ```lua
-EZ:Notify({ Title = "Hi", Content = "...", Duration = 4, Type = "info|success|warning|error" })
+EZ:Notify({
+    Title = "Hi", Content = "...", Duration = 4,
+    Type = "info|success|warning|error",
+    Buttons = { { Text = "Open", Callback = function() end } }, -- action row; taking an action dismisses the card
+})
 EZ.MaxNotifications = 5   -- max cards on screen
 ```
 
-Cards show a type-colored dot + neutral border; auto-dismiss.
+Cards show a type-colored Lucide icon (when the icon pack resolves one —
+`info/circle-check/triangle-alert/octagon-x` with fallbacks) or a colored dot;
+auto-dismiss.
 
 ---
 
@@ -209,6 +231,7 @@ Cards show a type-colored dot + neutral border; auto-dismiss.
 ```lua
 EZ:ShowKeybindMenu() EZ:HideKeybindMenu() EZ:ToggleKeybindMenu()
 -- draggable panel of every keybind + live combos; position/visibility persist
+-- rows group under their owning window's name when 2+ windows have keybinds
 EZ:SetKeybindMenuAnchor("Top Left|Top Right|Bottom Left|Bottom Right")
 EZ:GetKeybindMenuAnchor()           -- start corner (default Top Right);
                                     -- a dragged position wins until re-picked
@@ -218,7 +241,8 @@ local wm = EZ:CreateWatermark({ Text = "{fps} fps | {ping} ms | {flag:MyToggle}"
 wm:SetText(t) wm:SetPosition(udim2) wm:Show() wm:Hide() wm:Destroy()
 
 EZ:Haptic("light|medium|heavy")     -- gamepad rumble
-EZ:CheckForUpdate(repo?)            -- GitHub latest-release compare
+local info = EZ:CheckForUpdate(repo?)  -- GitHub latest-release compare
+-- returns NIL on any failure; otherwise { latest, current, outdated, url, body }
 EZ:AttachTooltip(guiObj, text)
 EZ:Destroy()                        -- full nuke; EZ:OnDestroy(fn) hooks first
 ```
@@ -238,9 +262,12 @@ EZ:OnError(fn) EZ:GetErrors()       -- callback errors are captured, never crash
 if not EZ:KeySystem({
     Title = "My Hub", Keys = { "KEY1" },          -- or HashedKeys = { sha256... }
     SaveKey = "MyHub_Key.txt", GetKeyLink = "https://...",
+    GetKeyText = "Get Key from Discord",           -- custom link-button label
     MaxAttempts = 5, OnLockout = function() end,
 }) then return end
 ```
+**This call blocks its thread** until the user passes or gets locked out —
+always gate the rest of your script with `if not EZ:KeySystem(...) then return end`.
 HWID-salted SHA-256 when `crypt.hash` exists; stores the hash, never the key.
 
 ---
