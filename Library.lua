@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.4.0"
+    _version = "4.4.1"
 }
 
 -- defaults
@@ -3621,6 +3621,7 @@ function EZ:CreateWindow(opts)
         local function attachPopOut(frame, surface, makeGrip)
             local popFrame, popW, popH
             local dragging, dragStart, origin, moved
+            local grabDX, grabDY -- pointer offset inside the grabbed surface
             local dockedParent, dockedOrder = frame.Parent, frame.LayoutOrder
 
             local function clampPos(pos)
@@ -3643,10 +3644,14 @@ function EZ:CreateWindow(opts)
                 if popFrame then return end
                 local w = popW or math.max(frame.AbsoluteSize.X, 280)
                 local h = popH or math.max(frame.AbsoluteSize.Y, 180)
+                -- grab offsets are nil for API-driven pops (button/SetPoppedOut)
+                local gx = grabDX or 0
+                local gy = grabDY or 0
                 popFrame = create("Frame", {
                     Name = "EZPopOut",
                     Size = UDim2.new(0, w, 0, h),
-                    Position = clampPos(UDim2.fromOffset(x - w / 2, y - 12)),
+                    -- continuity: the grabbed point stays under the cursor
+                    Position = clampPos(UDim2.fromOffset(x - gx, y - gy)),
                     BackgroundColor3 = theme.Base,
                     BackgroundTransparency = 0.05,
                     BorderSizePixel = 0,
@@ -3727,23 +3732,29 @@ function EZ:CreateWindow(opts)
                 grip.InputBegan:Connect(function(inp)
                     if inp.UserInputType == Enum.UserInputType.MouseButton1
                         or inp.UserInputType == Enum.UserInputType.Touch then
+                        local sp = grip.AbsolutePosition
                         dragging = true
                         moved = false
+                        grabDX = inp.Position.X - sp.X
+                        grabDY = inp.Position.Y - sp.Y
                         dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
-                        origin = popFrame and popFrame.Position or nil
                     end
                 end)
             end
 
-            -- drag on the surface: >6px = a drag (clicks check EZDragged);
-            -- leaving the window undocks under the pointer mid-gesture
+            -- drag on the surface: >6px starts a real drag; a docked box
+            -- undocks IMMEDIATELY under the pointer (the grabbed point stays
+            -- under the cursor - no jump), a floating panel just follows.
+            -- Release over the window re-docks.
             trackConnection(surface.InputBegan, function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1
                     or inp.UserInputType == Enum.UserInputType.Touch then
+                    local sp = surface.AbsolutePosition
                     dragging = true
                     moved = false
+                    grabDX = inp.Position.X - sp.X
+                    grabDY = inp.Position.Y - sp.Y
                     dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
-                    origin = popFrame and popFrame.Position or nil
                 end
             end)
             trackConnection(UserInputService.InputChanged, function(inp)
@@ -3756,15 +3767,12 @@ function EZ:CreateWindow(opts)
                     moved = true
                     surface:SetAttribute("EZDragged", true)
                 end
+                if not moved then return end
+                if not popFrame then
+                    popOutAt(x, y) -- undock right away, grabbed point pinned
+                end
                 if popFrame then
-                    if moved and origin then
-                        popFrame.Position = clampPos(UDim2.new(0, origin.X.Offset + dx, 0, origin.Y.Offset + dy))
-                    end
-                elseif moved and not overWindow(x, y) then
-                    popOutAt(x, y)
-                    -- continue the same gesture on the fresh panel
-                    origin = popFrame and popFrame.Position or nil
-                    dragStart = Vector2.new(x, y)
+                    popFrame.Position = clampPos(UDim2.fromOffset(x - grabDX, y - grabDY))
                 end
             end)
             trackConnection(UserInputService.InputEnded, function(inp)

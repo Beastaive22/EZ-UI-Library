@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.4.1
+
+### Fixed
+- **Drag feel**: a docked groupbox now undocks **the moment a drag starts**
+  (previously you had to drag past the window bounds with nothing happening —
+  a dead zone), and the panel appears with the **grabbed point pinned under the
+  cursor** (it used to jump to a pointer-centered position).
+- Popping out via the API/button (`SetPoppedOut`/`TogglePoppedOut`) no longer
+  errors when there was no drag grab offset — the showcase's "Pop this
+  groupbox out / dock" button now works.
+
 ## 4.4.0
 
 ### Added
