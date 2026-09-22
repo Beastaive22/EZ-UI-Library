@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.4.0
+
+### Added
+- **Drag groupboxes and tabboxes out of the window.** Grab a section/groupbox
+  **header** and drag it beyond the window bounds — it undocks mid-gesture into
+  a floating, draggable panel; drag it back and release over the window to
+  re-dock. Top-level tabboxes (`Tab:AddLeftTabbox`) use the ⠿ **grip chip** on
+  their tab strip instead. The same drag moves the panel while it floats.
+- Floating panels register as window popups: `window:Hide()`/`Destroy()` docks
+  them back instead of stranding them on screen.
+- A header drag no longer triggers the collapse toggle (click-suppression via
+  the `EZDragged` attribute).
+- `Tabbox:Resize()` (doc parity) re-applies the active tab.
+
+### Changed
+- `SetPoppedOut`/`TogglePoppedOut`/`SetMaxPopOutHeight`/`SetPopOutWidth` now
+  run on the shared pop-out core used by both sections and tabboxes.
+
 ## 4.3.1
 
 ### Fixed

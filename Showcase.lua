@@ -419,6 +419,18 @@ New43:AddButton({
     end,
 })
 
+New43:AddDivider("Pop-out")
+
+-- v4.4: drag any groupbox HEADER out of the window to float it; drag it back
+-- and release over the window to dock. Tabboxes use the grip on their strip.
+New43:AddButton({
+    Text = "Pop this groupbox out / dock",
+    Tooltip = "same as dragging the header out of the window and back",
+    Callback = function() New43:TogglePoppedOut() end,
+})
+New43:AddLabel({ DoesWrap = true,
+    Text = "TabBoxes float too: drag the grip chip at the right of the tab strip." })
+
 -- =========================================================================
 --  NOTIFICATIONS & DIALOGS
 -- =========================================================================

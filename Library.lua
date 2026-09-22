@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.3.1"
+    _version = "4.4.0"
 }
 
 -- defaults
@@ -3613,6 +3613,179 @@ function EZ:CreateWindow(opts)
         -- ~~----
         -- chromeless: bare container for composite elements (TabBox tabs) -
         -- same builders, no section chrome
+        -- v4.4: pop-out machinery. Drag the header (sections) or the grip
+        -- chip (tabboxes) OUT of the window to undock into a floating panel;
+        -- drag it back and release over the window to re-dock. While floating,
+        -- the same surface keeps dragging the panel around. Panels register
+        -- as window popups, so Hide/Destroy docks them back automatically.
+        local function attachPopOut(frame, surface, makeGrip)
+            local popFrame, popW, popH
+            local dragging, dragStart, origin, moved
+            local dockedParent, dockedOrder = frame.Parent, frame.LayoutOrder
+
+            local function clampPos(pos)
+                local screen = getScreenSize()
+                local w = (popFrame and popFrame.AbsoluteSize.X) or (popW or 300)
+                local h = (popFrame and popFrame.AbsoluteSize.Y) or 200
+                return UDim2.new(0, clamp(pos.X.Offset, 0, math.max(0, screen.X - w)),
+                    0, clamp(pos.Y.Offset, 0, math.max(0, screen.Y - h)))
+            end
+
+            local function overWindow(x, y)
+                local mp, ms = main.AbsolutePosition, main.AbsoluteSize
+                return x >= mp.X - 24 and x <= mp.X + ms.X + 24
+                    and y >= mp.Y - 24 and y <= mp.Y + ms.Y + 24
+            end
+
+            local handle = {}
+
+            local function popOutAt(x, y)
+                if popFrame then return end
+                local w = popW or math.max(frame.AbsoluteSize.X, 280)
+                local h = popH or math.max(frame.AbsoluteSize.Y, 180)
+                popFrame = create("Frame", {
+                    Name = "EZPopOut",
+                    Size = UDim2.new(0, w, 0, h),
+                    Position = clampPos(UDim2.fromOffset(x - w / 2, y - 12)),
+                    BackgroundColor3 = theme.Base,
+                    BackgroundTransparency = 0.05,
+                    BorderSizePixel = 0,
+                    ZIndex = 200,
+                    Parent = gui,
+                })
+                addCorner(popFrame, 10)
+                addStroke(popFrame, theme.Border, 1, 0.35)
+                frame.Parent = popFrame
+                frame.Size = UDim2.fromScale(1, 1)
+                frame.BackgroundTransparency = 0.35
+                frame.ZIndex = 201
+                -- window Hide/Destroy docks the panel back instead of
+                -- stranding it on screen
+                registerPopup(popFrame, function() handle:SetPoppedOut(false) end)
+            end
+
+            local function dock()
+                if not popFrame then return end
+                frame.Parent = dockedParent
+                frame.Size = UDim2.new(1, 0, 0, 0)
+                frame.LayoutOrder = dockedOrder
+                frame.BackgroundTransparency = 0.4
+                frame.ZIndex = 5
+                popFrame:Destroy()
+                popFrame = nil
+            end
+
+            function handle:SetPoppedOut(on, floatPos)
+                on = on == true
+                if on then
+                    if not popFrame then
+                        local px = floatPos and floatPos.X.Offset or 120
+                        local py = floatPos and floatPos.Y.Offset or 120
+                        popOutAt(px + 140, py)
+                    end
+                    if floatPos and popFrame then
+                        popFrame.Position = clampPos(floatPos)
+                    end
+                else
+                    dock()
+                end
+                return handle
+            end
+            function handle:TogglePoppedOut() return handle:SetPoppedOut(popFrame == nil) end
+            function handle:IsPoppedOut() return popFrame ~= nil end
+            function handle:SetMaxPopOutHeight(h)
+                popH = tonumber(h)
+                if popFrame and popH then
+                    popFrame.Size = UDim2.new(popFrame.Size.X.Scale, popFrame.Size.X.Offset, 0, popH)
+                    frame.ClipsDescendants = true
+                end
+                return handle
+            end
+            function handle:SetPopOutWidth(w)
+                popW = tonumber(w)
+                if popFrame and popW then
+                    popFrame.Size = UDim2.new(0, popW, popFrame.Size.Y.Scale, popFrame.Size.Y.Offset)
+                end
+                return handle
+            end
+
+            -- optional grip chip (tabboxes have no free header space; parent
+            -- to the surface's parent so a UIListLayout row doesn't slot it)
+            if makeGrip then
+                local grip = create("TextButton", {
+                    Name = "EZPopOutGrip",
+                    Size = UDim2.new(0, 16, 0, 22),
+                    Position = UDim2.new(1, -18, 0, 2),
+                    BackgroundTransparency = 1,
+                    Text = "⠿",
+                    TextColor3 = theme.TextMuted,
+                    TextSize = 12,
+                    AutoButtonColor = false,
+                    ZIndex = 10,
+                    Parent = surface.Parent or surface,
+                })
+                grip.InputBegan:Connect(function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1
+                        or inp.UserInputType == Enum.UserInputType.Touch then
+                        dragging = true
+                        moved = false
+                        dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
+                        origin = popFrame and popFrame.Position or nil
+                    end
+                end)
+            end
+
+            -- drag on the surface: >6px = a drag (clicks check EZDragged);
+            -- leaving the window undocks under the pointer mid-gesture
+            trackConnection(surface.InputBegan, function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1
+                    or inp.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    moved = false
+                    dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
+                    origin = popFrame and popFrame.Position or nil
+                end
+            end)
+            trackConnection(UserInputService.InputChanged, function(inp)
+                if not dragging then return end
+                if inp.UserInputType ~= Enum.UserInputType.MouseMovement
+                    and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+                local x, y = inp.Position.X, inp.Position.Y
+                local dx, dy = x - dragStart.X, y - dragStart.Y
+                if not moved and math.abs(dx) + math.abs(dy) > 6 then
+                    moved = true
+                    surface:SetAttribute("EZDragged", true)
+                end
+                if popFrame then
+                    if moved and origin then
+                        popFrame.Position = clampPos(UDim2.new(0, origin.X.Offset + dx, 0, origin.Y.Offset + dy))
+                    end
+                elseif moved and not overWindow(x, y) then
+                    popOutAt(x, y)
+                    -- continue the same gesture on the fresh panel
+                    origin = popFrame and popFrame.Position or nil
+                    dragStart = Vector2.new(x, y)
+                end
+            end)
+            trackConnection(UserInputService.InputEnded, function(inp)
+                if inp.UserInputType ~= Enum.UserInputType.MouseButton1
+                    and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+                if dragging and moved and popFrame and overWindow(inp.Position.X, inp.Position.Y) then
+                    dock() -- released over the window: re-dock
+                end
+                dragging = false
+                if moved then
+                    task.delay(0.15, function()
+                        if surface and surface.Parent then
+                            surface:SetAttribute("EZDragged", false)
+                        end
+                    end)
+                end
+                moved = false
+            end)
+            return handle
+        end
+
         -- v4.3: forward declaration - the TabBox core is defined after
         -- createSection (it mounts chromeless sections) but is referenced by
         -- section:AddTabBox inside it, and by Tab:AddLeftTabbox/AddRightTabbox.
@@ -3760,117 +3933,27 @@ function EZ:CreateWindow(opts)
                 function section:Show() return section:SetVisible(true) end
                 function section:Hide() return section:SetVisible(false) end
 
-                -- v4.2: pop-out — undock the section into a floating panel.
-                -- Simplified vs Obsidian: the whole section floats (grip-drag,
-                -- width/height overrides, screen clamp) without a separate
-                -- scrolling body.
-                local popOutFrame, popOutW, popOutH
-                local poDrag, poStart, poOrigin
-                local dockedParent = sectionFrame.Parent
-                local dockedOrder = sectionFrame.LayoutOrder
-                local function clampPopOutPos(pos)
-                    local screen = getScreenSize()
-                    local w = (popOutFrame and popOutFrame.AbsoluteSize.X) or (popOutW or 300)
-                    local h = (popOutFrame and popOutFrame.AbsoluteSize.Y) or 200
-                    return UDim2.new(
-                        0, clamp(pos.X.Offset, 0, math.max(0, screen.X - w)),
-                        0, clamp(pos.Y.Offset, 0, math.max(0, screen.Y - h))
-                    )
-                end
-                local function setPoppedOut(on, floatPos)
-                    on = on == true
-                    if on and not popOutFrame then
-                        popOutFrame = create("Frame", {
-                            Name = "EZPopOut",
-                            Size = UDim2.new(
-                                0, popOutW or math.max(sectionFrame.AbsoluteSize.X, 280),
-                                0, popOutH or math.max(sectionFrame.AbsoluteSize.Y, 180)
-                            ),
-                            Position = floatPos or UDim2.new(0, 80, 0, 80),
-                            BackgroundColor3 = theme.Base,
-                            BackgroundTransparency = 0.05,
-                            BorderSizePixel = 0,
-                            ZIndex = 200,
-                            Parent = gui,
-                        })
-                        addCorner(popOutFrame, 10)
-                        addStroke(popOutFrame, theme.Border, 1, 0.35)
-                        sectionFrame.Parent = popOutFrame
-                        sectionFrame.Size = UDim2.fromScale(1, 1)
-                        sectionFrame.BackgroundTransparency = 0.35
-                        sectionFrame.ZIndex = 201
-
-                        local grip = create("TextButton", {
-                            Name = "EZPopOutGrip",
-                            Size = UDim2.new(0, 14, 0, 14),
-                            Position = UDim2.new(1, -40, 0.5, -7),
-                            BackgroundTransparency = 1,
-                            Text = "⠿",
-                            TextColor3 = theme.TextMuted,
-                            TextSize = 12,
-                            AutoButtonColor = false,
-                            ZIndex = 202,
-                            Parent = sectionHeader,
-                        })
-                        grip.InputBegan:Connect(function(inp)
-                            if inp.UserInputType == Enum.UserInputType.MouseButton1
-                                or inp.UserInputType == Enum.UserInputType.Touch then
-                                poDrag = true
-                                poStart = Vector2.new(inp.Position.X, inp.Position.Y)
-                                poOrigin = popOutFrame.Position
-                            end
-                        end)
-                        if floatPos then
-                            popOutFrame.Position = clampPopOutPos(floatPos)
-                        end
-                    elseif not on and popOutFrame then
-                        local grip = sectionHeader:FindFirstChild("EZPopOutGrip")
-                        if grip then grip:Destroy() end
-                        sectionFrame.Parent = dockedParent
-                        sectionFrame.Size = UDim2.new(1, 0, 0, 0)
-                        sectionFrame.LayoutOrder = dockedOrder
-                        sectionFrame.BackgroundTransparency = 0.4
-                        sectionFrame.ZIndex = 5
-                        popOutFrame:Destroy()
-                        popOutFrame = nil
-                    end
-                    section._poppedOut = on
+                -- v4.4: pop-out via the shared machinery - the whole header is
+                -- the drag surface (drag it out of the window to undock; drag
+                -- back and release over the window to re-dock)
+                local pop = attachPopOut(sectionFrame, sectionHeader, false)
+                function section:SetPoppedOut(on, floatPos)
+                    pop:SetPoppedOut(on, floatPos)
                     return section
                 end
-                function section:SetPoppedOut(on, floatPos) return setPoppedOut(on, floatPos) end
-                function section:TogglePoppedOut() return setPoppedOut(popOutFrame == nil) end
-                function section:IsPoppedOut() return popOutFrame ~= nil end
+                function section:TogglePoppedOut()
+                    pop:TogglePoppedOut()
+                    return section
+                end
+                function section:IsPoppedOut() return pop:IsPoppedOut() end
                 function section:SetMaxPopOutHeight(h)
-                    popOutH = tonumber(h)
-                    if popOutFrame and popOutH then
-                        popOutFrame.Size = UDim2.new(popOutFrame.Size.X.Scale, popOutFrame.Size.X.Offset, 0, popOutH)
-                        sectionFrame.ClipsDescendants = true
-                    end
+                    pop:SetMaxPopOutHeight(h)
                     return section
                 end
                 function section:SetPopOutWidth(w)
-                    popOutW = tonumber(w)
-                    if popOutFrame and popOutW then
-                        popOutFrame.Size = UDim2.new(0, popOutW, popOutFrame.Size.Y.Scale, popOutFrame.Size.Y.Offset)
-                    end
+                    pop:SetPopOutWidth(w)
                     return section
                 end
-                trackConnection(UserInputService.InputChanged, function(inp)
-                    if not poDrag or not popOutFrame then return end
-                    if inp.UserInputType ~= Enum.UserInputType.MouseMovement
-                        and inp.UserInputType ~= Enum.UserInputType.Touch then return end
-                    local dx = inp.Position.X - poStart.X
-                    local dy = inp.Position.Y - poStart.Y
-                    popOutFrame.Position = clampPopOutPos(UDim2.new(0, poOrigin.X.Offset + dx, 0, poOrigin.Y.Offset + dy))
-                end)
-                trackConnection(UserInputService.InputEnded, function(inp)
-                    if inp.UserInputType == Enum.UserInputType.MouseButton1
-                        or inp.UserInputType == Enum.UserInputType.Touch then
-                        poDrag = false
-                    end
-                end)
-                section._dockedParent = sectionFrame.Parent
-                section._dockedOrder = sectionFrame.LayoutOrder
 
                 -- arrow (chevron icon when an icon pack is bound, "v" fallback)
                 local chevron = EZ:ResolveIcon("chevron-down")
@@ -3902,6 +3985,8 @@ function EZ:CreateWindow(opts)
 
                 local collapsed = false
                 trackConnection(sectionHeader.MouseButton1Click, function()
+                    -- a header drag (pop-out / move) must not also collapse
+                    if sectionHeader:GetAttribute("EZDragged") then return end
                     collapsed = not collapsed
                     tween(arrow, {Rotation = collapsed and -90 or 0}, 0.2)
                     elemContainer.Visible = not collapsed
@@ -7039,6 +7124,11 @@ function EZ:CreateWindow(opts)
                 box:_uiSelect(name)
             end
 
+            -- v4.4: re-apply the active tab (doc parity: Tabbox:Resize)
+            function box:Resize()
+                box:_uiSelect(box.Value)
+            end
+
             for _, name in tabNames do
                 box:_addTab(name)
             end
@@ -7131,6 +7221,27 @@ function EZ:CreateWindow(opts)
 
             local box = mountTabBox(host, opts.Tabs or { "Tab 1", "Tab 2" })
             box:_uiSelect(box.Value)
+
+            -- v4.4: the pill row's grip chip drags the whole tabbox out of the
+            -- window into a floating panel (and back)
+            local pop = attachPopOut(host, host:FindFirstChildWhichIsA("Frame") or host, true)
+            function box:SetPoppedOut(on, floatPos)
+                pop:SetPoppedOut(on, floatPos)
+                return box
+            end
+            function box:TogglePoppedOut()
+                pop:TogglePoppedOut()
+                return box
+            end
+            function box:IsPoppedOut() return pop:IsPoppedOut() end
+            function box:SetMaxPopOutHeight(h)
+                pop:SetMaxPopOutHeight(h)
+                return box
+            end
+            function box:SetPopOutWidth(w)
+                pop:SetPopOutWidth(w)
+                return box
+            end
 
             function box:Select(name)
                 name = tostring(name)

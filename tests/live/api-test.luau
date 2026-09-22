@@ -367,6 +367,29 @@ local function runAll()
     check("Window Footer", footerFound)
     wf:Destroy()
 
+    -- v4.4: pop-out drag-out / drag-back (synthetic input simulation)
+    local UIS = game:GetService("UserInputService")
+    local poTab = w:AddTab("PopTab", "box")
+    local poSec = poTab:AddLeftGroupbox("PopDrag", "box")
+    check("Pop-out API", poSec:IsPoppedOut() == false)
+    local hdr = poSec._header
+    local main = w._main
+    local function fireAll(signal, fake)
+        pcall(function()
+            for _, c in getconnections(signal) do pcall(function() c:Fire(fake) end) end
+        end)
+    end
+    fireAll(hdr.InputBegan, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(100, 100, 0) })
+    local outsideX = math.max(4, main.AbsolutePosition.X - 150)
+    fireAll(UIS.InputChanged, { UserInputType = Enum.UserInputType.MouseMovement,
+        Position = Vector3.new(outsideX, main.AbsolutePosition.Y + 60, 0) })
+    task.wait(0.1)
+    check("Drag-out pops out", poSec:IsPoppedOut() == true)
+    fireAll(UIS.InputEnded, { UserInputType = Enum.UserInputType.MouseButton1,
+        Position = Vector3.new(main.AbsolutePosition.X + 60, main.AbsolutePosition.Y + 60, 0) })
+    task.wait(0.1)
+    check("Drag-back re-docks", poSec:IsPoppedOut() == false)
+
     w:Destroy()
 end
 
