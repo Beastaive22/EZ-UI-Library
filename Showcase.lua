@@ -50,7 +50,9 @@ local Window = EZ:CreateWindow({
 
     ToggleKey = Enum.KeyCode.RightShift, -- keyboard key or Enum.UserInputType.MouseButton1/2/3
     ToggleIcon = "sparkles",             -- Lucide name for the minimize dock's Open tile
-    Icon = "sparkles",                   -- v4.3: header icon (replaces the logo dot)
+    -- EZ Hub logo in the header: ImageManager downloads assets/logo.png once
+    -- via getcustomasset; on executors without it the logo dot stays
+    Icon = EZ.ImageManager.AddAsset("ez_logo", nil, repo .. "assets/logo.png"),
     Footer = "EZ Example | v" .. EZ._version, -- v4.3: centered footer bar
 
     -- Width = 620, Height = 440,        -- defaults (mobile clamps smaller)

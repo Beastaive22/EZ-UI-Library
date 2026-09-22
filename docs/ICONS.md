@@ -34,4 +34,4 @@ Exact name > contains-substring (earlier = better) > in-order subsequence with p
 
 ## Where icons are accepted
 
-Anywhere the library resolves an icon — `Window:AddTab(name, "shield")`, `CreateWindow({ ToggleIcon = "sparkles" })`, `QuickBar:Pin(id, { Icon = "activity" })` — plus raw refs (`"rbxassetid://123"`, numbers, `rbxthumb://`) always work without the pack.
+Anywhere the library resolves an icon — `Window:AddTab(name, "shield")`, `CreateWindow({ ToggleIcon = "sparkles" })`, `QuickBar:Pin(id, { Icon = "activity" })` — plus raw refs (`"rbxassetid://123"`, numbers, `rbxthumb://`, `rbxasset://` from `getcustomasset`) always work without the pack.

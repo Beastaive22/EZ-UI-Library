@@ -391,4 +391,6 @@ Bell in the header + slide-out history panel.
 
 `EZ:SetIcons(IconsPack)` enables lucide names everywhere an icon is accepted
 (tabs, groupboxes, dock tiles, chevrons). `EZ:ResolveIcon(ref)` also accepts
-`rbxassetid://`, plain numeric ids, or urls.
+`rbxassetid://`, plain numeric ids, or urls — including `rbxasset://` strings
+from `getcustomasset`, so an `EZ.ImageManager.AddAsset` result can be passed
+straight to any `Icon` field.

@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.4.4
+
+### Added
+- **EZ Hub logo.** `assets/logo.svg` (source, vector) and `assets/logo.png`
+  (256px raster, what the README and scripts load) replace the old art.
+
+### Fixed
+- **`EZ:ResolveIcon` passes `rbxasset://` through untouched.** Strings that are
+  already asset URLs are returned as-is instead of being sent to the icon
+  lookup; `rbxasset://` covers `getcustomasset` results, so
+  `EZ.ImageManager.AddAsset("logo", nil, "https://…/logo.png")` can now be
+  handed straight to any `Icon` field.
+
+### Showcase
+- The window header now shows the EZ Hub logo via
+  `EZ.ImageManager.AddAsset`, exercising the new passthrough. On executors
+  without `getcustomasset` the asset resolves to `nil` and the header falls
+  back to the plain logo dot.
+
 ## 4.4.3
 
 ### Fixed

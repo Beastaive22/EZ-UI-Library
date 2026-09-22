@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.4.3"
+    _version = "4.4.4"
 }
 
 -- defaults
@@ -590,8 +590,9 @@ function EZ:ResolveIcon(ref)
     if not ref then return nil end
     if type(ref) == "number" then return "rbxassetid://" .. ref end
     if type(ref) ~= "string" then return nil end
-    -- already an asset url
-    if ref:find("rbxassetid://") or ref:find("rbxthumb://") or ref:find("rbxgameasset://") or ref:find("http") then
+    -- already an asset url (rbxasset:// covers getcustomasset results, e.g.
+    -- ImageManager downloads)
+    if ref:find("rbxassetid://") or ref:find("rbxasset://") or ref:find("rbxthumb://") or ref:find("rbxgameasset://") or ref:find("http") then
         return ref
     end
     -- numeric string
