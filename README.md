@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.2.0-7c5cfc" alt="version">
+  <img src="https://img.shields.io/badge/version-4.3.0-7c5cfc" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-46d17a" alt="license">
   <img src="https://img.shields.io/badge/platform-Roblox%20executors-232323?logo=roblox" alt="platform">
   <img src="https://img.shields.io/badge/mobile-supported-46d17a" alt="mobile">

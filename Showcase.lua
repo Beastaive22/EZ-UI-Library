@@ -50,6 +50,8 @@ local Window = EZ:CreateWindow({
 
     ToggleKey = Enum.KeyCode.RightShift, -- keyboard key or Enum.UserInputType.MouseButton1/2/3
     ToggleIcon = "sparkles",             -- Lucide name for the minimize dock's Open tile
+    Icon = "sparkles",                   -- v4.3: header icon (replaces the logo dot)
+    Footer = "EZ Example | v" .. EZ._version, -- v4.3: centered footer bar
 
     -- Width = 620, Height = 440,        -- defaults (mobile clamps smaller)
     -- TabWidth = 150,                   -- sidebar width
@@ -299,24 +301,22 @@ VisualsGroup:AddParagraph({
 --  TABBOXES
 -- =========================================================================
 
--- Tabboxes are structure elements: each tab inside them is a full section.
--- Signature: Section:AddTabBox(id, { Tabs = { "Tab 1", "Tab 2" } })
-local TabBox = Tabs.Main:AddGroupbox("left", "Tabbox", "columns"):AddTabBox("MyTabbox", {
-    Tabs = { "Tab 1", "Tab 2" },
-})
+-- Tabboxes are their own structure (v4.3): Tab:AddLeftTabbox() / AddRightTabbox()
+-- places one directly in the column layout - they are NOT meant to live inside
+-- groupboxes. Each tab inside is a full section.
+local TabBox = Tabs.Main:AddLeftTabbox({ Tabs = { "Tab 1", "Tab 2" } })
 
 -- You can now call AddToggle, etc on the tabs you added to the Tabbox:
 TabBox.Tabs["Tab 1"]:AddSlider("Tab1Slider", { Text = "control in Tab 1", Min = 0, Max = 100, Default = 40 })
 TabBox.Tabs["Tab 2"]:AddToggle("Tab2Toggle", { Text = "control in Tab 2" })
 
 -- v3.9: tabs can be added at runtime (with an icon); the segments re-layout.
-local tabboxOwner = EZ._elements.MyTabbox
 Tabs.Main:AddGroupbox("right", "More elements", "puzzle"):AddButton({
     Text = "Tabbox:AddTab('Third', 'star')",
     Callback = function()
-        local third = tabboxOwner:AddTab("Third", "star")
+        local third = TabBox:AddTab("Third", "star")
         third:AddLabel("added at runtime")
-        tabboxOwner:Select("Third")
+        TabBox:Select("Third")
     end,
 })
 
@@ -354,6 +354,59 @@ EmbedGroup:AddUIPassthrough("MyPassthrough", {
     Height = 48,
 })
 -- :Destroy() hands the instance back to its original parent.
+
+-- =========================================================================
+--  NEW IN 4.3
+-- =========================================================================
+
+local New43 = Tabs.Main:AddGroupbox("left", "New in 4.3", "sparkles", "parity additions")
+
+-- Buttons: Sub = compact secondary style; Disabled = starts locked
+New43:AddButton({ Text = "Button", Callback = function() end })
+New43:AddButton({ Text = "Sub button", Sub = true, Callback = function() end })
+New43:AddButton({ Text = "Disabled button", Disabled = true, Callback = function() end })
+
+New43:AddDivider("Labels")
+
+-- Label family: plain / wrapping / multi-line (no wrap) / exposed to EZ.Labels
+New43:AddLabel("This is a label")
+New43:AddLabel({ Text = "This is a label that wraps its text!", DoesWrap = true })
+New43:AddLabel("Line one\nLine two (no wrap, explicit newlines)")
+local exposed = New43:AddLabel("MyExposedLabel", { Text = "Exposed to EZ.Labels.MyExposedLabel" })
+New43:AddButton({
+    Text = "SetText the exposed label",
+    Callback = function()
+        EZ.Labels.MyExposedLabel:SetText("updated at " .. os.date("%H:%M:%S"))
+    end,
+})
+
+New43:AddDivider("Custom display slider")
+
+-- Sliders: Display(value) -> string replaces the default number rendering
+New43:AddSlider("CustomDisplaySlider", {
+    Text = "This is my custom display slider!",
+    Min = 1, Max = 5, Default = 3, Increment = 1,
+    Display = function(v) return v .. "/5" end,
+})
+
+New43:AddDivider("Keybind modes")
+
+-- Keybinds: Toggle / Hold / Press (Press fires on every keydown, no state)
+New43:AddKeybind("PressKeybind", {
+    Text = "Press keybind (fires each press)",
+    Default = Enum.KeyCode.Y,
+    Mode = "Press",
+    Callback = function() print("[cb] PressKeybind fired") end,
+})
+
+New43:AddButton({
+    Text = "Spawn a draggable label",
+    Tooltip = "v4.3: EZ:CreateDraggableLabel - floats on screen, drag it anywhere",
+    Callback = function()
+        local dl = EZ:CreateDraggableLabel("This is a Draggable Label")
+        task.delay(8, function() pcall(function() dl:Destroy() end) end)
+    end,
+})
 
 -- =========================================================================
 --  NOTIFICATIONS & DIALOGS

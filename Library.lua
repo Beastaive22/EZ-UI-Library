@@ -28,6 +28,7 @@ end)
 
 local EZ = {
     Flags = {},
+    Labels = {}, -- v4.3: id-addressable labels (AddLabel("MyLabel", {...}))
     Windows = {},
     Notifications = {},
     Theme = nil,
@@ -44,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.2.0"
+    _version = "4.3.0"
 }
 
 -- defaults
@@ -751,8 +752,10 @@ function EZ:Notify(opts)
             Position = UDim2.new(0, 12, 0, 10),
             BackgroundTransparency = 1,
             Text = ("0/%d"):format(totalSteps),
-            TextColor3 = theme.TextMuted,
-            TextSize = 10,
+            -- v4.3: TextMuted faded into the card on some themes; TextDim
+            -- keeps the counter readable after theme switches
+            TextColor3 = theme.TextDim,
+            TextSize = 11,
             Font = Enum.Font.GothamMedium,
             TextXAlignment = Enum.TextXAlignment.Left,
             Parent = card,
@@ -1897,16 +1900,33 @@ function EZ:CreateWindow(opts)
     })
     addCorner(header, 14)
     
-    -- logo dot (gently pulses so window feels "alive")
-    local logoDot = create("Frame", {
-        Size = UDim2.new(0, 7, 0, 7),
-        Position = UDim2.new(0, 16, 0.5, -3),
-        BackgroundColor3 = theme.Accent,
-        BorderSizePixel = 0,
-        ZIndex = 6,
-        Parent = header
-    })
-    addCorner(logoDot, 4)
+    -- logo dot (gently pulses so window feels "alive"); v4.3: opts.Icon
+    -- (lucide name / asset) replaces the dot with a real header icon
+    local headerIconAsset = opts.Icon and EZ:ResolveIcon(opts.Icon) or nil
+    local logoDot
+    if headerIconAsset then
+        logoDot = create("ImageLabel", {
+            Size = UDim2.new(0, 16, 0, 16),
+            Position = UDim2.new(0, 14, 0.5, -8),
+            BackgroundTransparency = 1,
+            Image = headerIconAsset,
+            ImageColor3 = theme.Accent,
+            ScaleType = Enum.ScaleType.Fit,
+            BorderSizePixel = 0,
+            ZIndex = 6,
+            Parent = header
+        })
+    else
+        logoDot = create("Frame", {
+            Size = UDim2.new(0, 7, 0, 7),
+            Position = UDim2.new(0, 16, 0.5, -3),
+            BackgroundColor3 = theme.Accent,
+            BorderSizePixel = 0,
+            ZIndex = 6,
+            Parent = header
+        })
+        addCorner(logoDot, 4)
+    end
     -- pulse halo
     local logoHalo = create("Frame", {
         Size = UDim2.new(0, 7, 0, 7),
@@ -2180,6 +2200,45 @@ function EZ:CreateWindow(opts)
                 end
             end
         end
+
+        -- v4.3: if the active tab has no matches, jump to the first tab that
+        -- does - searching used to leave you on an empty tab while matches sat
+        -- in another chapter
+        if searching then
+            local function tabHasVisible(t)
+                local content = t._content
+                if not content then return false end
+                for _, secFrame in content:GetChildren() do
+                    if secFrame:IsA("Frame") and secFrame.Visible
+                        and not secFrame:GetAttribute("EZGroupRow") then
+                        return true
+                    end
+                end
+                for _, col in t._groupCols or {} do
+                    for _, secFrame in col:GetChildren() do
+                        if secFrame:IsA("Frame") and secFrame.Visible then return true end
+                    end
+                end
+                for _, sub in t.SubTabs or {} do
+                    local container = sub._container
+                    if container and container.Visible then
+                        for _, secFrame in container:GetChildren() do
+                            if secFrame:IsA("Frame") and secFrame.Visible then return true end
+                        end
+                    end
+                end
+                return false
+            end
+            local active = self.ActiveTab
+            if active and not tabHasVisible(active) then
+                for _, t in self.Tabs do
+                    if tabHasVisible(t) then
+                        if t._activate then t:_activate() end
+                        break
+                    end
+                end
+            end
+        end
     end
 
     -- coalesce keystrokes: the _applySearch descendant walk runs at most
@@ -2327,13 +2386,39 @@ function EZ:CreateWindow(opts)
     -- content area
     local contentArea = create("Frame", {
         Name = "Content",
-        Size = UDim2.new(1, -(tabW + 2), 1, -48),
+        Size = UDim2.new(1, -(tabW + 2), 1, -(48 + (opts.Footer and 22 or 0))),
         Position = UDim2.new(0, tabW + 2, 0, 48),
         BackgroundTransparency = 1,
         ZIndex = 3,
         ClipsDescendants = true,
         Parent = main
     })
+
+    -- v4.3: optional footer bar (Obsidian-style) - e.g. a version string
+    if opts.Footer then
+        create("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 1, -22),
+            BackgroundColor3 = theme.Border,
+            BackgroundTransparency = 0.5,
+            BorderSizePixel = 0,
+            ZIndex = 4,
+            Parent = main
+        })
+        create("TextLabel", {
+            Name = "EZFooter",
+            Size = UDim2.new(1, 0, 0, 21),
+            Position = UDim2.new(0, 0, 1, -21),
+            BackgroundTransparency = 1,
+            Text = tostring(opts.Footer),
+            TextColor3 = theme.TextMuted,
+            TextSize = 10,
+            Font = Enum.Font.GothamMedium,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            ZIndex = 4,
+            Parent = main
+        })
+    end
 
     -- UserInputService fires ahead of the GUI click events, so a click on the
     -- dropdown itself is recognised here and left alone.
@@ -3528,6 +3613,11 @@ function EZ:CreateWindow(opts)
         -- ~~----
         -- chromeless: bare container for composite elements (TabBox tabs) -
         -- same builders, no section chrome
+        -- v4.3: forward declaration - the TabBox core is defined after
+        -- createSection (it mounts chromeless sections) but is referenced by
+        -- section:AddTabBox inside it, and by Tab:AddLeftTabbox/AddRightTabbox.
+        local mountTabBox
+
         local function createSection(sectionName, parentFrame, opts2)
             opts2 = opts2 or {}
             local chromeless = opts2.chromeless == true
@@ -4036,6 +4126,18 @@ function EZ:CreateWindow(opts)
                 -- or a NaN Default would clamp straight to Max
                 local d = tonumber(opts.Default)
                 local value = clamp((d == d and d) or min, min, max)
+                -- v4.3: custom value display (Obsidian-style) - when set, the
+                -- value label shows Display(value) instead of number+suffix
+                local displayFn = type(opts.Display) == "function" and opts.Display or nil
+                local valLabel
+                local function renderValue()
+                    if displayFn then
+                        local ok, text = pcall(displayFn, value)
+                        valLabel.Text = ok and tostring(text) or tostring(value)
+                    else
+                        valLabel.Text = prefix .. fmtVal(value) .. suffix
+                    end
+                end
                 local cb = opts.Callback or function() end
 
                 local elem = create("Frame", {
@@ -4060,7 +4162,7 @@ function EZ:CreateWindow(opts)
 
                 -- value label doubles as a click-to-edit button (typed exact
                 -- values commit through the same clamp/snap as dragging)
-                local valLabel = create("TextButton", {
+                valLabel = create("TextButton", {
                     Name = "EZSliderValue",
                     Size = UDim2.new(0.4, 0, 0, 16),
                     Position = UDim2.new(0.6, 0, 0, 0),
@@ -4126,7 +4228,7 @@ function EZ:CreateWindow(opts)
                     local pct = range > 0 and ((v - min) / range) or 0
                     fill.Size = UDim2.new(pct, 0, 1, 0)
                     sliderThumb.Position = UDim2.new(pct, -7, 0.5, -7)
-                    valLabel.Text = prefix .. fmtVal(v) .. suffix
+                    renderValue()
                     EZ.Flags[id] = v
                     fireListeners(id, v)
                     if not silent then safecall(`Slider:{id}`, cb, v) end
@@ -4142,14 +4244,18 @@ function EZ:CreateWindow(opts)
                 trackConnection(valLabel.MouseButton1Click, function()
                     if editing or sliding or isElementDisabled(elem) then return end
                     editing = true
+                    -- v4.3: hide the label while editing - the old value used
+                    -- to ghost through behind the transparent editor
+                    valLabel.TextTransparency = 1
                     local box = create("TextBox", {
                         Name = "EZSliderEdit",
                         Size = valLabel.Size,
                         Position = valLabel.Position,
-                        BackgroundTransparency = 1,
+                        BackgroundColor3 = theme.Panel,
+                        BackgroundTransparency = 0.1,
                         Text = fmtVal(value),
                         PlaceholderText = ("%g-%g"):format(min, max),
-                        TextColor3 = theme.Accent,
+                        TextColor3 = theme.Text,
                         PlaceholderColor3 = theme.TextMuted,
                         TextSize = 12,
                         Font = Enum.Font.GothamBold,
@@ -4158,6 +4264,7 @@ function EZ:CreateWindow(opts)
                         ZIndex = 11,
                         Parent = elem
                     })
+                    addCorner(box, 4)
                     box:CaptureFocus()
                     local done = false
                     local armed = false
@@ -4167,10 +4274,11 @@ function EZ:CreateWindow(opts)
                         editing = false
                         local n = tonumber(box.Text)
                         box:Destroy()
+                        valLabel.TextTransparency = 0
                         if n then
                             update(n)
                         else
-                            valLabel.Text = prefix .. fmtVal(value) .. suffix
+                            renderValue()
                         end
                     end
                     -- the opening click steals focus for a beat; arm the
@@ -4184,6 +4292,7 @@ function EZ:CreateWindow(opts)
                     trackConnection(box.FocusLost, commit)
                     box.Destroying:Connect(function()
                         done, editing = true, false
+                        valLabel.TextTransparency = 0
                     end)
                 end)
 
@@ -4281,18 +4390,21 @@ function EZ:CreateWindow(opts)
             function section:AddButton(opts)
                 opts = opts or {}
                 local cb = opts.Callback or function() end
+                -- v4.3: Sub = compact secondary style; Disabled = starts locked
+                local isSub = opts.Sub == true
+                local startDisabled = opts.Disabled == true
 
                 local btn = create("TextButton", {
-                    Size = UDim2.new(1, 0, 0, mobile and 38 or 32),
+                    Size = UDim2.new(1, 0, 0, isSub and (mobile and 32 or 26) or (mobile and 38 or 32)),
                     BackgroundColor3 = theme.Surface,
-                    BackgroundTransparency = 0.3,
+                    BackgroundTransparency = isSub and 0.5 or 0.3,
                     Text = "",
                     BorderSizePixel = 0,
                     AutoButtonColor = false,
                     ZIndex = 6,
                     Parent = elemContainer
                 })
-                addCorner(btn, 7)
+                addCorner(btn, isSub and 5 or 7)
                 local btnStroke = addStroke(btn, theme.Border, 1, 0.55)
 
                 create("TextLabel", {
@@ -4300,11 +4412,18 @@ function EZ:CreateWindow(opts)
                     BackgroundTransparency = 1,
                     Text = opts.Text or "Button",
                     TextColor3 = theme.Text,
-                    TextSize = 12,
+                    TextSize = isSub and 11 or 12,
                     Font = Enum.Font.GothamMedium,
                     ZIndex = 7,
                     Parent = btn
                 })
+                if startDisabled then
+                    btn:SetAttribute("EZDisabled", true)
+                    btn.BackgroundTransparency = 0.55
+                    for _, c in btn:GetChildren() do
+                        if c:IsA("TextLabel") then c.TextTransparency = 0.45 end
+                    end
+                end
 
                 trackConnection(btn.MouseEnter, function()
                     if isElementDisabled(btn) then return end
@@ -4312,7 +4431,7 @@ function EZ:CreateWindow(opts)
                     tween(btnStroke, {Color = theme.Accent, Transparency = 0.4}, 0.15)
                 end)
                 trackConnection(btn.MouseLeave, function()
-                    tween(btn, {BackgroundTransparency = 0.3}, 0.15)
+                    tween(btn, {BackgroundTransparency = isSub and 0.5 or 0.3}, 0.15)
                     tween(btnStroke, {Color = theme.Border, Transparency = 0.55}, 0.15)
                 end)
                 trackConnection(btn.MouseButton1Click, function()
@@ -5147,160 +5266,24 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
-                local pillRow = create("Frame", {
-                    Size = UDim2.new(1, 0, 0, mobile and 30 or 26),
-                    BackgroundTransparency = 1,
-                    ZIndex = 7,
-                    Parent = elem,
-                    Children = {
-                        create("UIListLayout", {
-                            FillDirection = Enum.FillDirection.Horizontal,
-                            SortOrder = Enum.SortOrder.LayoutOrder,
-                            Padding = UDim.new(0, 4),
-                        }),
-                    }
-                })
-
-                local stack = create("Frame", {
-                    Size = UDim2.new(1, 0, 0, 0),
-                    Position = UDim2.new(0, 0, 0, mobile and 34 or 30),
-                    BackgroundTransparency = 1,
-                    AutomaticSize = Enum.AutomaticSize.Y,
-                    ZIndex = 6,
-                    Parent = elem,
-                    Children = {
-                        create("UIListLayout", {
-                            SortOrder = Enum.SortOrder.LayoutOrder,
-                            Padding = UDim.new(0, 4),
-                        }),
-                    }
-                })
-
-                local box = { Tabs = {}, Value = tabNames[1], _type = "TabBox" }
-                local buttons = {}
+                -- shared core (v4.3): pill row + tab stack mounted into elem
+                local box = mountTabBox(elem, tabNames)
 
                 local function select(name, silent)
                     if box.Tabs[name] == nil then return end
+                    box:_uiSelect(name)
                     box.Value = name
                     EZ.Flags[id] = name
-                    for n, sec in box.Tabs do
-                        sec.Frame.Visible = (n == name)
-                    end
-                    for n, btn in buttons do
-                        local active = (n == name)
-                        tween(btn, {
-                            BackgroundTransparency = active and 0.15 or 0.6,
-                        }, 0.15)
-                        btn.TextColor3 = active and theme.Text or theme.TextDim
-                        -- icon-tabs keep their name in a child label
-                        for _, c in btn:GetChildren() do
-                            if c:IsA("TextLabel") then
-                                c.TextColor3 = active and theme.Text or theme.TextDim
-                            end
-                        end
-                    end
                     fireListeners(id, name)
                     if not silent then safecall(`TabBox:{id}`, cb, name) end
                 end
-
-                -- v3.9: keep segments equal-width as tabs are added later
-                local function relayout()
-                    local total = 0
-                    for _ in buttons do total += 1 end
-                    total = math.max(1, total)
-                    for _, btn in buttons do
-                        btn.Size = UDim2.new(1 / total, -(4 * (total - 1)) / total, 1, 0)
-                    end
-                end
-
-                local function addTab(name, icon)
-                    name = tostring(name)
-                    if box.Tabs[name] ~= nil then return box.Tabs[name] end
-                    local idx = 0
-                    for _ in buttons do idx += 1 end
-                    idx += 1
-
-                    local btn = create("TextButton", {
-                        Size = UDim2.new(1 / idx, -(4 * (idx - 1)) / idx, 1, 0),
-                        BackgroundColor3 = theme.Surface,
-                        BackgroundTransparency = 0.6,
-                        Text = icon and "" or name,
-                        TextColor3 = theme.TextDim,
-                        TextSize = 12,
-                        Font = Enum.Font.GothamMedium,
-                        BorderSizePixel = 0,
-                        AutoButtonColor = false,
-                        LayoutOrder = idx,
-                        ZIndex = 8,
-                        Parent = pillRow
-                    })
-                    addCorner(btn, 6)
-                    if icon then
-                        local asset = EZ.ResolveIcon ~= nil and EZ:ResolveIcon(icon)
-                        if asset then
-                            create("ImageLabel", {
-                                Size = UDim2.new(0, 14, 0, 14),
-                                Position = UDim2.new(0, 6, 0.5, -7),
-                                BackgroundTransparency = 1,
-                                Image = asset,
-                                ImageColor3 = theme.TextDim,
-                                ScaleType = Enum.ScaleType.Fit,
-                                ZIndex = 9,
-                                Parent = btn
-                            })
-                            create("TextLabel", {
-                                Size = UDim2.new(1, -32, 1, 0),
-                                Position = UDim2.new(0, 26, 0, 0),
-                                BackgroundTransparency = 1,
-                                Text = name,
-                                TextColor3 = theme.TextDim,
-                                TextSize = 12,
-                                Font = Enum.Font.GothamMedium,
-                                TextXAlignment = Enum.TextXAlignment.Left,
-                                TextTruncate = Enum.TextTruncate.AtEnd,
-                                ZIndex = 9,
-                                Parent = btn
-                            })
-                        else
-                            btn.Text = name
-                        end
-                    end
-                    buttons[name] = btn
-                    relayout()
-
-                    local container = create("Frame", {
-                        Size = UDim2.new(1, 0, 0, 0),
-                        BackgroundTransparency = 1,
-                        AutomaticSize = Enum.AutomaticSize.Y,
-                        Visible = false,
-                        LayoutOrder = idx,
-                        ZIndex = 6,
-                        Parent = stack,
-                    })
-
-                    -- chromeless section: full element builders, no box chrome
-                    local subSec = createSection(name, container, { chromeless = true })
-                    box.Tabs[name] = subSec
-
-                    trackConnection(btn.MouseButton1Click, function()
-                        if isElementDisabled(elem) then return end
-                        select(name)
-                    end)
-                    if box.Value == name then
-                        select(name, true)
-                    end
-                    return subSec
-                end
-
-                for _, name in tabNames do
-                    addTab(name)
-                end
+                box._click = function(name) select(name) end
 
                 function box:Select(name) select(tostring(name)) end
                 function box:Set(name, silent) select(tostring(name), silent) end
                 function box:Get() return box.Value end
                 -- v3.9: tabs can be added after creation (Obsidian Tabbox:AddTab)
-                function box:AddTab(name, icon) return addTab(name, icon) end
+                function box:AddTab(name, icon) return box:_addTab(name, icon) end
 
                 EZ.Flags[id] = box.Value
                 -- show the first tab once layout exists
@@ -5505,6 +5488,9 @@ function EZ:CreateWindow(opts)
                     elseif mode == "Hold" then
                         active = true
                         if keybind then keybind.Active = true end
+                        safecall(`Keybind:{id}`, cb, true)
+                    elseif mode == "Press" then
+                        -- v4.3: fires on every keydown, no latched state
                         safecall(`Keybind:{id}`, cb, true)
                     end
                 end)
@@ -6215,16 +6201,29 @@ function EZ:CreateWindow(opts)
             -- ===
             -- LABEL
             -- ===
-            function section:AddLabel(text)
-                -- accept table form too: AddLabel({ Text = "...", Tooltip = ..., VisibleWhen = ..., DoesWrap = ..., RichText = ..., Size = 14 })
-                local opts = (type(text) == "table") and text or nil
-                if opts then text = opts.Text or opts.Title or "" end
+            function section:AddLabel(textOrId, opts2)
+                -- v4.3 forms:
+                --   AddLabel("text")
+                --   AddLabel({ Text = "...", DoesWrap = true, RichText = true, Size = 14 })
+                --   AddLabel("MyLabel", { Text = "..." })  -> EZ.Labels.MyLabel
+                local id, opts
+                if type(textOrId) == "table" then
+                    opts = textOrId
+                    textOrId = opts.Text or opts.Title or ""
+                elseif opts2 ~= nil then
+                    id = tostring(textOrId)
+                    opts = opts2
+                    textOrId = opts.Text or opts.Title or ""
+                end
                 local doesWrap = opts ~= nil and opts.DoesWrap == true
                 local lbl = create("TextLabel", {
-                    Size = doesWrap and UDim2.new(1, 0, 0, 0) or UDim2.new(1, 0, 0, 18),
-                    AutomaticSize = doesWrap and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,
+                    -- AutomaticSize always: wrapping grows with width, and
+                    -- non-wrapped text still grows with explicit newlines
+                    -- (multi-line labels used to clip at the fixed 18px row)
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
                     BackgroundTransparency = 1,
-                    Text = tostring(text or ""),
+                    Text = tostring(textOrId or ""),
                     RichText = opts and opts.RichText == true or false,
                     TextWrapped = doesWrap,
                     TextColor3 = theme.TextDim,
@@ -6234,7 +6233,7 @@ function EZ:CreateWindow(opts)
                     ZIndex = 7,
                     Parent = elemContainer
                 })
-                tagSearch(lbl, tostring(text or ""))
+                tagSearch(lbl, tostring(textOrId or ""))
                 if opts then
                     setupVisibility(lbl, lbl, opts)
                     setupTooltip(lbl, opts)
@@ -6252,6 +6251,14 @@ function EZ:CreateWindow(opts)
                     return self
                 end
                 finishElement(label, lbl, nil, section)
+                if id then
+                    EZ.Labels[id] = label
+                    local baseDestroy = label.Destroy
+                    function label:Destroy()
+                        if EZ.Labels[id] == label then EZ.Labels[id] = nil end
+                        baseDestroy()
+                    end
+                end
                 table.insert(section.Elements, label)
                 return label
             end
@@ -6873,6 +6880,164 @@ function EZ:CreateWindow(opts)
             return section
         end
 
+        -- v4.3: shared TabBox core. Mounts the pill row + tab stack into any
+        -- host frame and returns the box. Used by Section:AddTabBox and by
+        -- Tab:AddLeftTabbox / AddRightTabbox (top-level structure).
+        mountTabBox = function(host, tabNames)
+            local pillRow = create("Frame", {
+                Size = UDim2.new(1, 0, 0, mobile and 30 or 26),
+                BackgroundTransparency = 1,
+                ZIndex = 7,
+                Parent = host,
+                Children = {
+                    create("UIListLayout", {
+                        FillDirection = Enum.FillDirection.Horizontal,
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                        Padding = UDim.new(0, 4),
+                    }),
+                }
+            })
+
+            local stack = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 0),
+                Position = UDim2.new(0, 0, 0, mobile and 34 or 30),
+                BackgroundTransparency = 1,
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 6,
+                Parent = host,
+                Children = {
+                    create("UIListLayout", {
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                        Padding = UDim.new(0, 4),
+                    }),
+                }
+            })
+
+            local box = { Tabs = {}, Value = tabNames[1], _type = "TabBox" }
+            local buttons = {}
+
+            -- pure UI switch: frames + segment colours (no flags/callbacks)
+            function box:_uiSelect(name)
+                if box.Tabs[name] == nil then return end
+                box.Value = name
+                for n, sec in box.Tabs do
+                    sec.Frame.Visible = (n == name)
+                end
+                for n, btn in buttons do
+                    local active = (n == name)
+                    tween(btn, {
+                        BackgroundTransparency = active and 0.15 or 0.6,
+                    }, 0.15)
+                    btn.TextColor3 = active and theme.Text or theme.TextDim
+                    -- icon-tabs keep their name in a child label
+                    for _, c in btn:GetChildren() do
+                        if c:IsA("TextLabel") then
+                            c.TextColor3 = active and theme.Text or theme.TextDim
+                        end
+                    end
+                end
+            end
+
+            -- keep segments equal-width as tabs are added later
+            local function relayout()
+                local total = 0
+                for _ in buttons do total += 1 end
+                total = math.max(1, total)
+                for _, btn in buttons do
+                    btn.Size = UDim2.new(1 / total, -(4 * (total - 1)) / total, 1, 0)
+                end
+            end
+
+            function box:_addTab(name, icon)
+                name = tostring(name)
+                if box.Tabs[name] ~= nil then return box.Tabs[name] end
+                local idx = 0
+                for _ in buttons do idx += 1 end
+                idx += 1
+
+                local btn = create("TextButton", {
+                    Size = UDim2.new(1 / idx, -(4 * (idx - 1)) / idx, 1, 0),
+                    BackgroundColor3 = theme.Surface,
+                    BackgroundTransparency = 0.6,
+                    Text = icon and "" or name,
+                    TextColor3 = theme.TextDim,
+                    TextSize = 12,
+                    Font = Enum.Font.GothamMedium,
+                    BorderSizePixel = 0,
+                    AutoButtonColor = false,
+                    LayoutOrder = idx,
+                    ZIndex = 8,
+                    Parent = pillRow
+                })
+                addCorner(btn, 6)
+                if icon then
+                    local asset = EZ.ResolveIcon ~= nil and EZ:ResolveIcon(icon)
+                    if asset then
+                        create("ImageLabel", {
+                            Size = UDim2.new(0, 14, 0, 14),
+                            Position = UDim2.new(0, 6, 0.5, -7),
+                            BackgroundTransparency = 1,
+                            Image = asset,
+                            ImageColor3 = theme.TextDim,
+                            ScaleType = Enum.ScaleType.Fit,
+                            ZIndex = 9,
+                            Parent = btn
+                        })
+                        create("TextLabel", {
+                            Size = UDim2.new(1, -32, 1, 0),
+                            Position = UDim2.new(0, 26, 0, 0),
+                            BackgroundTransparency = 1,
+                            Text = name,
+                            TextColor3 = theme.TextDim,
+                            TextSize = 12,
+                            Font = Enum.Font.GothamMedium,
+                            TextXAlignment = Enum.TextXAlignment.Left,
+                            TextTruncate = Enum.TextTruncate.AtEnd,
+                            ZIndex = 9,
+                            Parent = btn
+                        })
+                    else
+                        btn.Text = name
+                    end
+                end
+                buttons[name] = btn
+                relayout()
+
+                local container = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, 0),
+                    BackgroundTransparency = 1,
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Visible = false,
+                    LayoutOrder = idx,
+                    ZIndex = 6,
+                    Parent = stack,
+                })
+
+                -- chromeless section: full element builders, no box chrome
+                local subSec = createSection(name, container, { chromeless = true })
+                box.Tabs[name] = subSec
+
+                trackConnection(btn.MouseButton1Click, function()
+                    if isElementDisabled(host) then return end
+                    box._click(name)
+                end)
+                if box.Value == name then
+                    box:_uiSelect(name)
+                end
+                return subSec
+            end
+
+            -- section:AddTabBox overrides _click to add flags + callbacks
+            box._click = function(name)
+                box:_uiSelect(name)
+            end
+
+            for _, name in tabNames do
+                box:_addTab(name)
+            end
+            return box
+        end
+
         function tab:AddSection(sectionName, description)
             return createSection(sectionName, tabContent, { Description = description })
         end
@@ -6928,6 +7093,49 @@ function EZ:CreateWindow(opts)
         end
         function tab:AddLeftGroupbox(name, icon, description) return tab:AddGroupbox("left", name, icon, description) end
         function tab:AddRightGroupbox(name, icon, description) return tab:AddGroupbox("right", name, icon, description) end
+
+        -- v4.3: TabBox as a top-level structure (Obsidian-style) - its own box
+        -- in the two-column layout instead of nested inside a section.
+        -- Usage: local box = Tab:AddLeftTabbox({ Tabs = { "Tab 1", "Tab 2" } })
+        --        box:AddTab("Tab 3", "star")  -> returns a full section
+        local function addTabboxAt(side, opts)
+            opts = opts or {}
+            side = string.lower(tostring(side or "left"))
+            ensureGroupColumns()
+            local col = (side == "right") and tab._groupCols[2] or tab._groupCols[1]
+            local host = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 0),
+                BackgroundColor3 = theme.Panel,
+                BackgroundTransparency = 0.4,
+                AutomaticSize = Enum.AutomaticSize.Y,
+                ZIndex = 5,
+                Parent = col,
+                Children = {
+                    create("UIPadding", {
+                        PaddingTop = UDim.new(0, 6),
+                        PaddingBottom = UDim.new(0, 8),
+                        PaddingLeft = UDim.new(0, 10),
+                        PaddingRight = UDim.new(0, 10),
+                    }),
+                }
+            })
+            addCorner(host, 10)
+            addStroke(host, theme.Border, 1, 0.55)
+
+            local box = mountTabBox(host, opts.Tabs or { "Tab 1", "Tab 2" })
+            box:_uiSelect(box.Value)
+
+            function box:Select(name)
+                name = tostring(name)
+                if box.Tabs[name] ~= nil then box:_uiSelect(name) end
+            end
+            function box:Set(name) return box:Select(name) end
+            function box:Get() return box.Value end
+            function box:AddTab(name, icon) return box:_addTab(name, icon) end
+            return box
+        end
+        function tab:AddLeftTabbox(opts) return addTabboxAt("left", opts) end
+        function tab:AddRightTabbox(opts) return addTabboxAt("right", opts) end
 
         tab.AddSection = owned(tab.AddSection)
         tab.AddSubTab = owned(tab.AddSubTab)
@@ -8604,6 +8812,80 @@ function EZ:CreateLoading(opts)
 end
 
 -- ~~
+-- DRAGGABLE LABEL (v4.3)
+-- A floating, draggable text chip on screen (Obsidian's example shows one).
+-- ~~
+function EZ:CreateDraggableLabel(text, opts)
+    opts = opts or {}
+    local theme = self.Theme
+    local label = create("TextButton", {
+        Name = "EZDragLabel",
+        Size = UDim2.new(0, 0, 0, 26),
+        Position = opts.Position or UDim2.new(0, 12, 0, 160),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = theme.Surface,
+        BackgroundTransparency = 0.15,
+        Text = tostring(text or "Draggable Label"),
+        TextColor3 = theme.Text,
+        TextSize = 12,
+        Font = Enum.Font.GothamMedium,
+        AutoButtonColor = false,
+        BorderSizePixel = 0,
+        ZIndex = 150,
+        Parent = gui,
+        Children = {
+            create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+            create("UIPadding", {
+                PaddingLeft = UDim.new(0, 10),
+                PaddingRight = UDim.new(0, 10),
+            }),
+        }
+    })
+    addStroke(label, theme.Border, 1, 0.4)
+
+    local dragging, dragStart, dragOrigin
+    trackConnection(label.InputBegan, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = Vector2.new(inp.Position.X, inp.Position.Y)
+            dragOrigin = label.Position
+        end
+    end)
+    trackConnection(UserInputService.InputChanged, function(inp)
+        if not dragging then return end
+        if inp.UserInputType ~= Enum.UserInputType.MouseMovement and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+        local screen = getScreenSize()
+        label.Position = UDim2.new(
+            0, clamp(dragOrigin.X.Offset + (inp.Position.X - dragStart.X), 0, math.max(0, screen.X - label.AbsoluteSize.X)),
+            0, clamp(dragOrigin.Y.Offset + (inp.Position.Y - dragStart.Y), 0, math.max(0, screen.Y - label.AbsoluteSize.Y))
+        )
+    end)
+    trackConnection(UserInputService.InputEnded, function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    self._dragLabels = self._dragLabels or {}
+    local handle
+    handle = {
+        Frame = label,
+        SetText = function(_, t) label.Text = tostring(t) end,
+        Destroy = function()
+            pcall(function() label:Destroy() end)
+            local list = EZ._dragLabels
+            if list then
+                for i, l in list do
+                    if l == handle then table.remove(list, i) break end
+                end
+            end
+        end,
+    }
+    table.insert(self._dragLabels, handle)
+    return handle
+end
+
+-- ~~
 -- AUTO-UPDATE CHECK (fetches latest tag from github)
 -- ~~
 function EZ:CheckForUpdate(repo)
@@ -8747,6 +9029,11 @@ function EZ:Destroy()
         self._cursorCrossLabel = nil
         self._cursorIconLabel = nil
     end
+    -- v4.3: floating draggable labels
+    for _, l in (self._dragLabels or {}) do
+        pcall(function() l:Destroy() end)
+    end
+    self._dragLabels = nil
     self._antiAFK = false
 
     -- Keep the root ScreenGuis alive but empty. This makes EZ reusable after
@@ -8782,6 +9069,7 @@ function EZ:Destroy()
     table.clear(self.Windows)
     table.clear(self.Notifications)
     table.clear(self.Flags)
+    table.clear(self.Labels)
     table.clear(self._listeners)
     table.clear(self._elements)
     self._onDestroy = nil

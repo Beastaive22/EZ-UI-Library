@@ -326,6 +326,43 @@ local function runAll()
     gb42:TogglePoppedOut()
     check("Pop-out docks", gb42:IsPoppedOut() == false)
 
+    -- v4.3 additions
+    local subBtn = s:AddButton({ Text = "sub", Sub = true, Callback = function() end })
+    check("Sub button", subBtn ~= nil)
+    local disBtn = s:AddButton({ Text = "disabled", Disabled = true, Callback = function() end })
+    check("Disabled button attr", disBtn:GetAttribute("EZDisabled") == true)
+    local lbl = s:AddLabel("LblId", { Text = "hello", DoesWrap = true })
+    check("EZ.Labels registry", EZ.Labels.LblId == lbl)
+    lbl:Destroy()
+    check("Labels unregister", EZ.Labels.LblId == nil)
+    local mllbl = s:AddLabel("line one\nline two")
+    check("Multiline label", mllbl.Frame ~= nil and mllbl.Frame.AutomaticSize == Enum.AutomaticSize.Y)
+    local disp = s:AddSlider("T_Disp", { Text = "d", Min = 1, Max = 5, Default = 3, Increment = 1,
+        Display = function(v) return v .. "/5" end })
+    local dispFound = false
+    for _, d in disp.Frame:GetDescendants() do
+        if d:IsA("TextButton") and d.Text == "3/5" then dispFound = true break end
+    end
+    check("Slider custom Display", dispFound)
+    local pressKb = s:AddKeybind("T_Press", { Text = "p", Default = Enum.KeyCode.Y, Mode = "Press", Callback = function() end })
+    check("Keybind Press mode", pressKb ~= nil)
+    local tbTop = w:AddTab("TBTab", "columns"):AddLeftTabbox({ Tabs = { "A", "B" } })
+    check("Top-level Tabbox", tbTop ~= nil and tbTop:Get() == "A")
+    tbTop:AddTab("C", "star")
+    local nT = 0
+    for _ in tbTop.Tabs do nT += 1 end
+    check("Top-level Tabbox AddTab", nT == 3)
+    local dl = EZ:CreateDraggableLabel("probe")
+    check("DraggableLabel", dl.Frame.Parent ~= nil)
+    dl:Destroy()
+    local wf = EZ:CreateWindow({ Title = "T_Footer", AutoSettings = false, Footer = "v-probe", Icon = "sparkles" })
+    local footerFound = false
+    for _, d in wf._main:GetDescendants() do
+        if d.Name == "EZFooter" then footerFound = true break end
+    end
+    check("Window Footer", footerFound)
+    wf:Destroy()
+
     w:Destroy()
 end
 

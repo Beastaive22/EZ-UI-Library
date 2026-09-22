@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.3.0
+
+### Added
+- **Buttons**: `Sub = true` (compact secondary style) and `Disabled = true`
+  (starts locked + dimmed; the click guard already honoured `EZDisabled`).
+- **Labels**: `AddLabel("MyLabel", { ... })` — id-addressable through the new
+  **`EZ.Labels`** registry (`EZ.Labels.MyLabel:SetText(...)`); non-wrapping
+  labels now auto-size so **explicit multi-line text no longer clips**.
+- **Sliders**: `Display = function(value) -> string` renders a custom value
+  label (e.g. `1/5`) instead of the number+suffix.
+- **Keybinds**: `Mode = "Press"` — fires on every keydown with no latched state.
+- **TabBoxes as top-level structure**: `Tab:AddLeftTabbox(opts)` /
+  `Tab:AddRightTabbox(opts)` place a tabbox directly in the column layout
+  (Obsidian-style) instead of nesting inside a section; `Section:AddTabBox`
+  still exists for in-panel use. Both share one core (runtime `AddTab` with
+  icons included).
+- **Search**: when the active tab has no matches, the window auto-switches to
+  the first tab that does (search already filtered every tab).
+- **Window**: `Footer` (centered bottom bar, e.g. a version string) and `Icon`
+  (header icon replacing the logo dot) options.
+- **`EZ:CreateDraggableLabel(text, opts?)`** — floating draggable text chip
+  (`SetText`/`Destroy`, cleaned up by `EZ:Destroy`).
+
+### Fixed
+- **Slider editor ghost text**: the old value used to show through behind the
+  transparent editor; the label is now hidden while typing and the editor has a
+  proper panel background.
+- **Notification step counter contrast**: `TextMuted` faded into the card on
+  several themes — now `TextDim` at 11px.
+- CreateWindow with `Icon` no longer errors when the icon pack isn't bound.
+
 ## 4.2.0
 
 ### Added
