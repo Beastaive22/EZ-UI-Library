@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.8.0
+
+### Added
+- **Anti-AFK** — Settings ▸ Menu ▸ "Anti-AFK" toggle (also `EZ:SetAntiAFK(bool)`
+  / `EZ:IsAntiAFK()` / `EZ._antiAFKCount`). When the game fires `Idled`
+  (just before the ~20-minute idle kick), the library answers with a virtual
+  controller press (`VirtualUser:CaptureController` + `ClickButton2`) — plain
+  Roblox APIs, so it works on any executor. If a game blocks VirtualUser, the
+  fallback mutes the game's `Idled` connections directly (sUNC
+  `getconnections`) and **re-enables every muted connection when you turn
+  Anti-AFK off**. The first prevented kick notifies; `EZ._antiAFKCount` tracks
+  the rest. Persists through config save/load + autoload like any toggle.
+
 ## 3.7.0
 
 **SaveManager is namespaced per game.** The executor workspace is shared by

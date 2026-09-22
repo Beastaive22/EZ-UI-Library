@@ -241,6 +241,10 @@ local wm = EZ:CreateWatermark({ Text = "{fps} fps | {ping} ms | {flag:MyToggle}"
 wm:SetText(t) wm:SetPosition(udim2) wm:Show() wm:Hide() wm:Destroy()
 
 EZ:Haptic("light|medium|heavy")     -- gamepad rumble
+EZ:SetAntiAFK(true) / EZ:IsAntiAFK() -- v3.8: prevent the ~20 min idle kick;
+                                     -- answers Idled with a virtual press,
+                                     -- getconnections fallback, reversible.
+                                     -- EZ._antiAFKCount = prevented kicks
 local info = EZ:CheckForUpdate(repo?)  -- GitHub latest-release compare
 -- returns NIL on any failure; otherwise { latest, current, outdated, url, body }
 EZ:AttachTooltip(guiObj, text)

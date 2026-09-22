@@ -38,9 +38,13 @@ local EZ = {
     _onError = nil,
     _activeDrag = nil, -- mutex so picker drag doesn't bleed into slider
     _destroyed = false,
+    -- anti-afk: answers LocalPlayer.Idled with a virtual input so the
+    -- ~20-minute idle kick never fires; see EZ:SetAntiAFK
+    _antiAFK = false,
+    _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.7.0"
+    _version = "3.8.0"
 }
 
 -- defaults
@@ -1210,6 +1214,14 @@ local function buildSettingsContent(window, tab, tm, sm, opts)
                 -- dethrone them; 500 is the library default
                 gui.DisplayOrder = v and 25000 or 500
             end,
+        })
+
+        gb:AddToggle("_EZAntiAFK", {
+            Text = "Anti-AFK",
+            Description = "prevents the ~20 min idle kick",
+            Default = EZ._antiAFK == true,
+            Tooltip = "answers the idle event with a virtual controller press",
+            Callback = function(v) EZ:SetAntiAFK(v) end,
         })
 
         gb:AddDropdown("_EZNotifSide", {
@@ -6983,6 +6995,93 @@ function EZ:Haptic(strength)
 end
 
 -- ~~
+-- ANTI-AFK
+-- Roblox kicks after roughly 20 minutes without input. The Idled event fires
+-- just before that; answering it with a virtual controller press resets the
+-- idle timer. VirtualUser is a plain Roblox service, so this works on any
+-- executor; if a game blocks it, the fallback disables the game's Idled
+-- connections directly (sUNC getconnections).
+-- ~~
+function EZ:SetAntiAFK(on)
+    on = on == true
+    if self._destroyed or self._antiAFK == on then return on end
+    self._antiAFK = on
+
+    if self._antiAFKConn then
+        self._antiAFKConn:Disconnect()
+        self._antiAFKConn = nil
+    end
+
+    if not on then
+        -- fallback mode muted the game's Idled listeners; restore them
+        for _, c in (self._antiAFKDisabled or {}) do
+            pcall(function() c:Enable() end)
+        end
+        self._antiAFKDisabled = nil
+    end
+
+    if on then
+        local okVu, VirtualUser = pcall(function()
+            return game:GetService("VirtualUser")
+        end)
+        self._antiAFKConn = trackConnection(Players.LocalPlayer.Idled, function()
+            if not self._antiAFK then return end
+            self._antiAFKCount += 1
+            local handled = false
+            if VirtualUser then
+                handled = pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new())
+                end)
+            end
+            if not handled then
+                -- fallback: mute the game's own idle listeners so the kick
+                -- logic never runs (the sUNC anti-afk approach). Ours goes
+                -- first; every muted connection is re-enabled on disable.
+                pcall(function()
+                    local toMute = {}
+                    for _, c in getconnections(Players.LocalPlayer.Idled) do
+                        toMute[#toMute + 1] = c
+                    end
+                    if self._antiAFKConn then
+                        self._antiAFKConn:Disconnect()
+                        self._antiAFKConn = nil
+                    end
+                    for _, c in toMute do
+                        pcall(function()
+                            c:Disable()
+                            self._antiAFKDisabled[#self._antiAFKDisabled + 1] = c
+                        end)
+                    end
+                end)
+            end
+            if self._antiAFKCount == 1 and self.Notify then
+                pcall(self.Notify, self, {
+                    Title = "Anti-AFK",
+                    Content = "idle kick prevented — you can leave this open for hours",
+                    Type = "success",
+                    Duration = 3,
+                })
+            end
+        end)
+    end
+
+    if self.Notify then
+        pcall(self.Notify, self, {
+            Title = "Anti-AFK",
+            Content = on and "enabled — idle kick prevented" or "disabled",
+            Type = on and "success" or "info",
+            Duration = 2,
+        })
+    end
+    return on
+end
+
+function EZ:IsAntiAFK()
+    return self._antiAFK == true
+end
+
+-- ~~
 -- AUTO-UPDATE CHECK (fetches latest tag from github)
 -- ~~
 function EZ:CheckForUpdate(repo)
@@ -7141,6 +7240,8 @@ function EZ:Destroy()
     self._panic = false
     self._panicSnapshot = nil
     self._panicTiles = nil
+    self._antiAFK = false
+    self._antiAFKCount = 0
     table.clear(self.Windows)
     table.clear(self.Notifications)
     table.clear(self.Flags)

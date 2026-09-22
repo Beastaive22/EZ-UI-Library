@@ -160,6 +160,19 @@ local function runAll()
     check("SaveManager legacy migration", isfile(smRoot .. "/_autoload.txt") and not isfile("EZTestConfigs/_autoload.txt"))
     pcall(function() SM:DeleteAutoLoadConfig() end)
 
+    -- Anti-AFK (3.8)
+    EZ:SetAntiAFK(true)
+    local aaBefore = EZ._antiAFKCount or 0
+    pcall(function()
+        for _, c in getconnections(game:GetService("Players").LocalPlayer.Idled) do
+            pcall(function() c:Fire() end)
+        end
+    end)
+    check("Anti-AFK idle handled", EZ:IsAntiAFK() and (EZ._antiAFKCount or 0) == aaBefore + 1,
+        tostring((EZ._antiAFKCount or 0)) .. " vs " .. tostring(aaBefore + 1))
+    EZ:SetAntiAFK(false)
+    check("Anti-AFK off", EZ:IsAntiAFK() == false)
+
     w:Destroy()
 end
 

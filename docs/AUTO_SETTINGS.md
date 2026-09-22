@@ -11,6 +11,7 @@ local Window = EZ:CreateWindow({ Title = "My Script" })
 --          • Open Keybind Menu toggle      • Notification Side dropdown
 --          • Custom Cursor toggle          • DPI Scale dropdown
 --          • Always On Top toggle          • Corner Radius slider
+--          • Anti-AFK toggle (idle-kick prevention, v3.8)
 --          • Menu bind (rebinds the window hotkey)  • Unload button
 --
 --   LEFT:  Themes groupbox
