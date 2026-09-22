@@ -307,8 +307,19 @@ VisualsGroup:AddParagraph({
 local TabBox = Tabs.Main:AddLeftTabbox({ Tabs = { "Tab 1", "Tab 2" } })
 
 -- You can now call AddToggle, etc on the tabs you added to the Tabbox:
+-- (each tab acts like a nested groupbox - its own controls, own state)
 TabBox.Tabs["Tab 1"]:AddSlider("Tab1Slider", { Text = "control in Tab 1", Min = 0, Max = 100, Default = 40 })
+TabBox.Tabs["Tab 1"]:AddToggle("Tab1Toggle", { Text = "independent tab state", Default = true })
+TabBox.Tabs["Tab 1"]:AddButton({ Text = "button inside Tab 1", Callback = function()
+    EZ:Notify({ Title = "Tabbox", Content = "each tab is a full section", Duration = 2 })
+end })
 TabBox.Tabs["Tab 2"]:AddToggle("Tab2Toggle", { Text = "control in Tab 2" })
+TabBox.Tabs["Tab 2"]:AddDropdown("Tab2Dropdown", {
+    Text = "dropdown in Tab 2",
+    Values = { "Alpha", "Beta" },
+    Default = "Alpha",
+})
+TabBox:Select("Tab 1")
 
 -- v3.9: tabs can be added at runtime (with an icon); the segments re-layout.
 Tabs.Main:AddGroupbox("right", "More elements", "puzzle"):AddButton({

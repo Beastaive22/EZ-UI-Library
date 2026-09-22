@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.3.1
+
+### Fixed
+- **TabBox content was invisible — tabs looked empty.** Each tab's content
+  container is created `Visible = false`, but the switcher only toggled the
+  inner section frame, so no tab ever showed its controls no matter which pill
+  was active. `_uiSelect` now toggles the container too (both the section
+  version and the top-level `AddLeftTabbox`/`AddRightTabbox`). Regression tests
+  now assert effective visibility, not just the flag value.
+
 ## 4.3.0
 
 ### Added

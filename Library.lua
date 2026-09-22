@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.3.0"
+    _version = "4.3.1"
 }
 
 -- defaults
@@ -6921,7 +6921,14 @@ function EZ:CreateWindow(opts)
                 if box.Tabs[name] == nil then return end
                 box.Value = name
                 for n, sec in box.Tabs do
-                    sec.Frame.Visible = (n == name)
+                    local visible = (n == name)
+                    sec.Frame.Visible = visible
+                    -- the per-tab CONTAINER is created Visible=false; without
+                    -- this the content of every tab stayed permanently hidden
+                    -- (tabs looked empty no matter which pill was active)
+                    if sec.Frame.Parent then
+                        sec.Frame.Parent.Visible = visible
+                    end
                 end
                 for n, btn in buttons do
                     local active = (n == name)

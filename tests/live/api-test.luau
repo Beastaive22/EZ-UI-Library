@@ -103,6 +103,9 @@ local function runAll()
     local tb = s:AddTabBox("T_TB", { Tabs = { "One", "Two" } })
     tb:Select("Two")
     check("TabBox select", tb.Get() == "Two")
+    local tbVis = tb.Tabs["Two"]
+    check("TabBox content visible", tbVis.Frame.Visible == true and tbVis.Frame.Parent.Visible == true,
+        "container hidden = tabs look empty")
 
     -- progress + log
     local prog = s:AddProgressBar("T_Bar", { Text = "xp", Max = 200, Default = 50 })
@@ -348,6 +351,7 @@ local function runAll()
     check("Keybind Press mode", pressKb ~= nil)
     local tbTop = w:AddTab("TBTab", "columns"):AddLeftTabbox({ Tabs = { "A", "B" } })
     check("Top-level Tabbox", tbTop ~= nil and tbTop:Get() == "A")
+    check("Top-level Tabbox content visible", tbTop.Tabs["A"].Frame.Parent.Visible == true)
     tbTop:AddTab("C", "star")
     local nT = 0
     for _ in tbTop.Tabs do nT += 1 end
