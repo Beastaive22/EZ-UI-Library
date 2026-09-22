@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.4.2
+
+### Fixed
+- **Re-docking no longer reorders the column.** Re-parenting on dock put the
+  frame last among its siblings — and sibling order is the tiebreaker when
+  LayoutOrders are equal — so a docked box jumped to the bottom of its column.
+  The original slot is now captured and restored.
+- Floating panels can now be **resized** via a corner grip (bottom-right);
+  the size is remembered for the next pop-out.
+
 ## 4.4.1
 
 ### Fixed

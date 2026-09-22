@@ -390,6 +390,42 @@ local function runAll()
     task.wait(0.1)
     check("Drag-back re-docks", poSec:IsPoppedOut() == false)
 
+    -- v4.4.2: docking keeps the original column order + floating resize
+    local ordTab = w:AddTab("OrdTab", "box")
+    local ordA = ordTab:AddLeftGroupbox("OrdA", "box")
+    local ordB = ordTab:AddLeftGroupbox("OrdB", "box")
+    local ordC = ordTab:AddLeftGroupbox("OrdC", "box")
+    local function indexOf(f)
+        local i = 0
+        for _, c in f.Parent:GetChildren() do
+            if c:IsA("GuiObject") then
+                i += 1
+                if c == f then return i end
+            end
+        end
+        return -1
+    end
+    local beforeIdx = indexOf(ordB.Frame)
+    ordB:SetPoppedOut(true)
+    ordB:TogglePoppedOut()
+    check("Dock keeps column order", beforeIdx == indexOf(ordB.Frame),
+        tostring(beforeIdx) .. " -> " .. tostring(indexOf(ordB.Frame)))
+
+    ordB:SetPoppedOut(true)
+    local panel = ordB.Frame.Parent
+    local rz = panel and panel:FindFirstChild("EZPopOutResize")
+    check("Pop-out resize grip", rz ~= nil)
+    if rz then
+        local baseSize = panel.AbsoluteSize
+        fireAll(rz.InputBegan, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(500, 500, 0) })
+        fireAll(UIS.InputChanged, { UserInputType = Enum.UserInputType.MouseMovement, Position = Vector3.new(600, 560, 0) })
+        task.wait(0.1)
+        check("Pop-out resizes", panel.AbsoluteSize.X > baseSize.X,
+            tostring(baseSize.X) .. " -> " .. tostring(panel.AbsoluteSize.X))
+        fireAll(UIS.InputEnded, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(600, 560, 0) })
+    end
+    ordB:TogglePoppedOut()
+
     w:Destroy()
 end
 

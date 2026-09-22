@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.4.1"
+    _version = "4.4.2"
 }
 
 -- defaults
@@ -3622,7 +3622,23 @@ function EZ:CreateWindow(opts)
             local popFrame, popW, popH
             local dragging, dragStart, origin, moved
             local grabDX, grabDY -- pointer offset inside the grabbed surface
+            local resizing, resizeStart, resizeBase
             local dockedParent, dockedOrder = frame.Parent, frame.LayoutOrder
+            -- the frame's slot among its siblings (re-parenting on dock puts
+            -- it LAST among equal LayoutOrders, which reordered the column)
+            local dockedIndex = 0
+            do
+                local i = 0
+                for _, c in dockedParent:GetChildren() do
+                    if c:IsA("GuiObject") then
+                        i += 1
+                        if c == frame then
+                            dockedIndex = i
+                            break
+                        end
+                    end
+                end
+            end
 
             local function clampPos(pos)
                 local screen = getScreenSize()
@@ -3664,6 +3680,29 @@ function EZ:CreateWindow(opts)
                 frame.Size = UDim2.fromScale(1, 1)
                 frame.BackgroundTransparency = 0.35
                 frame.ZIndex = 201
+
+                -- v4.4.2: resize grip on the floating panel (bottom-right)
+                local rz = create("TextButton", {
+                    Name = "EZPopOutResize",
+                    Size = UDim2.new(0, 18, 0, 18),
+                    Position = UDim2.new(1, -18, 1, -18),
+                    BackgroundTransparency = 1,
+                    Text = "◢",
+                    TextColor3 = theme.TextMuted,
+                    TextSize = 11,
+                    AutoButtonColor = false,
+                    ZIndex = 202,
+                    Parent = popFrame,
+                })
+                rz.InputBegan:Connect(function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1
+                        or inp.UserInputType == Enum.UserInputType.Touch then
+                        resizing = true
+                        resizeStart = Vector2.new(inp.Position.X, inp.Position.Y)
+                        resizeBase = popFrame.AbsoluteSize
+                    end
+                end)
+
                 -- window Hide/Destroy docks the panel back instead of
                 -- stranding it on screen
                 registerPopup(popFrame, function() handle:SetPoppedOut(false) end)
@@ -3676,6 +3715,23 @@ function EZ:CreateWindow(opts)
                 frame.LayoutOrder = dockedOrder
                 frame.BackgroundTransparency = 0.4
                 frame.ZIndex = 5
+                -- restore the original slot: the frame landed last, so push
+                -- every sibling that belongs at/after its index behind it
+                -- again, in order (sibling order breaks equal LayoutOrders)
+                local later = {}
+                local i = 0
+                for _, c in dockedParent:GetChildren() do
+                    if c:IsA("GuiObject") and c ~= frame then
+                        i += 1
+                        if dockedIndex > 0 and i >= dockedIndex then
+                            later[#later + 1] = c
+                        end
+                    end
+                end
+                for _, c in later do
+                    c.Parent = nil
+                    c.Parent = dockedParent
+                end
                 popFrame:Destroy()
                 popFrame = nil
             end
@@ -3758,10 +3814,19 @@ function EZ:CreateWindow(opts)
                 end
             end)
             trackConnection(UserInputService.InputChanged, function(inp)
-                if not dragging then return end
                 if inp.UserInputType ~= Enum.UserInputType.MouseMovement
                     and inp.UserInputType ~= Enum.UserInputType.Touch then return end
                 local x, y = inp.Position.X, inp.Position.Y
+                -- v4.4.2: resize the floating panel via its corner grip
+                if resizing and popFrame then
+                    local screen = getScreenSize()
+                    local w = math.clamp(resizeBase.X + (x - resizeStart.X), 180, screen.X)
+                    local h = math.clamp(resizeBase.Y + (y - resizeStart.Y), 120, screen.Y)
+                    popFrame.Size = UDim2.new(0, w, 0, h)
+                    popW, popH = w, h -- remembered for the next pop-out
+                    return
+                end
+                if not dragging then return end
                 local dx, dy = x - dragStart.X, y - dragStart.Y
                 if not moved and math.abs(dx) + math.abs(dy) > 6 then
                     moved = true
@@ -3778,6 +3843,10 @@ function EZ:CreateWindow(opts)
             trackConnection(UserInputService.InputEnded, function(inp)
                 if inp.UserInputType ~= Enum.UserInputType.MouseButton1
                     and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+                if resizing then
+                    resizing = false
+                    return
+                end
                 if dragging and moved and popFrame and overWindow(inp.Position.X, inp.Position.Y) then
                     dock() -- released over the window: re-dock
                 end
