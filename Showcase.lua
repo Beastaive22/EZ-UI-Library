@@ -1,16 +1,21 @@
 --[[
-    Example script for the EZ UI Library, in the style of Obsidian's Example.lua.
-    Walk it top to bottom: every element has a "-- Groupbox:AddX" header, an
-    "-- Arguments:" line, and inline comments for each option.
+    EZ UI Library - showcase / element tour.
+
+    Every element the library has, documented in code: each one carries a
+    "-- Groupbox:AddX" header, an "-- Arguments:" line and inline comments for
+    each option. Read it top to bottom and you have read the whole API.
 
     Run it:
         loadstring(game:HttpGet(
             "https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Showcase.lua"
         ))()
 
-    Recommended reading order in the window:
-        Main          - every element, one groupbox per family
-        UI Settings   - the persistence wiring (EZ can also auto-attach this)
+    Tabs in the window:
+        Main    - every element, one groupbox per family
+        Layout  - scale / window-size lab, for judging the UI at other ratios
+        Settings- attached BY THE LIBRARY (AutoSettings). Menu + Themes +
+                  Configuration, including DPI Scale, corner radius, anti-afk.
+                  This file does not build it - see the note at the bottom.
 ]]
 
 local repo = "https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/"
@@ -26,10 +31,11 @@ local Flags = EZ.Flags -- every element writes its value here: Flags.MyToggle
 EZ.ForceCheckbox = false              -- true makes AddToggle render as a checkbox everywhere
 EZ.ShowToggleFrameInKeybinds = true   -- tap-toggles inside the floating keybind menu (default true)
 
--- Bind the addons BEFORE CreateWindow so AutoSettings adopts your names.
+-- Bind the addons BEFORE CreateWindow: the auto-attached Settings tab reads
+-- these names, and the theme is applied before the window builds (no flash).
 SaveManager:Bind(EZ, "EZExample")
 ThemeManager:Bind(EZ, { File = "EZExample_Theme.txt" })
-ThemeManager:LoadSaved() -- apply the saved theme before the window builds (no colour flash)
+ThemeManager:LoadSaved()
 for name, tbl in EZ.Themes do ThemeManager:AddTheme(name, tbl) end
 
 EZ:SetIcons(Icons) -- after this, every icon slot accepts Lucide names
@@ -45,7 +51,7 @@ local Window = EZ:CreateWindow({
     -- Title keys the geometry file; GeometryId overrides that key when the
     -- title contains punctuation or two scripts share a name.
     Title = "EZ Example",
-    SubTitle = "in the style of Obsidian's Example.lua",
+    SubTitle = "every element + the default Settings tab",
     GeometryId = "ezexample",
 
     ToggleKey = Enum.KeyCode.RightShift, -- keyboard key or Enum.UserInputType.MouseButton1/2/3
@@ -53,15 +59,18 @@ local Window = EZ:CreateWindow({
     -- EZ Hub logo in the header: ImageManager downloads assets/logo.png once
     -- via getcustomasset; on executors without it the logo dot stays
     Icon = EZ.ImageManager.AddAsset("ez_logo", nil, repo .. "assets/logo.png"),
-    Footer = "EZ Example | v" .. EZ._version, -- v4.3: centered footer bar
+    Footer = "EZ Example | v" .. EZ._version, -- centered footer bar
 
     -- Width = 620, Height = 440,        -- defaults (mobile clamps smaller)
     -- TabWidth = 150,                   -- sidebar width
-    -- Scale = 1,                        -- 0.5 - 2
+    -- Scale = 1,                        -- 0.5 - 2, live-sweepable in the Layout tab
     -- SidebarToggle = true,             -- show the sidebar-collapse button
     -- Gestures = true,                  -- mobile swipe-to-switch-tabs
-    AutoSettings = false,                -- THIS example builds its own UI Settings tab below;
-                                         -- remove this line to let the library attach one for you
+
+    AutoSettings = true,                 -- the library attaches its own Settings tab
+                                         -- (Menu / Themes / Configuration, DPI scale,
+                                         --  corner radius, anti-afk). Pass false to
+                                         -- build your own - see the bottom of this file.
     -- CloseBehavior = "library",        -- X = full EZ:Destroy() (default); "window" closes just this window
 })
 
@@ -82,7 +91,7 @@ Every element also has: :Set(v[, silent]) / :Get() / :SetText(t) /
 -- Icons: https://lucide.dev - any name from the pack works after SetIcons.
 local Tabs = {
     Main = Window:AddTab("Main", "user"),
-    ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+    Layout = Window:AddTab("Layout", "ruler"),
 }
 
 -- Groupboxes come in left/right pairs that share one row (Obsidian-style).
@@ -494,44 +503,113 @@ FeedbackGroup:AddButton({
 })
 
 -- =========================================================================
---  UI SETTINGS TAB  (what AutoSettings builds for you automatically)
+--  LAYOUT TAB - judge the UI at other ratios
+--
+--  The Settings tab (attached by AutoSettings) already has a DPI Scale
+--  dropdown with the same 9 presets. This tab exists to go further:
+--  sweep every value in between, resize the window, and see how the rows
+--  below hold up while you do it.
 -- =========================================================================
 
-local UISettingsTab = Tabs["UI Settings"]
+local ScaleGroup = Tabs.Layout:AddGroupbox("left", "UI Scale", "ruler", "same control as Settings > DPI Scale")
 
-local MenuGroup = UISettingsTab:AddGroupbox("left", "Menu", "wrench")
+-- Percent -> scale, without the gsub-returns-two-values trap:
+-- tonumber(s:gsub(...)) would feed the replacement count in as a base.
+local function setScalePct(pct)
+    local n = tonumber((tostring(pct):gsub("%%", ""))) or 100
+    Window:SetScale(n / 100)
+end
 
--- Groupbox:AddKeybind rebinding the window hotkey
-local menuBind = MenuGroup:AddKeybind("MenuKeybind", {
-    Text = "Menu bind",
-    Default = Enum.KeyCode.RightShift,
+-- Groupbox:AddSlider - live sweep. The dropdown jumps between presets; this
+-- shows every value in between, which is how you find where a layout breaks.
+local scaleSlider = ScaleGroup:AddSlider("LayoutScale", {
+    Text = "Window scale",
+    Min = 50, Max = 200, Default = 100, Increment = 5,
+    Suffix = "%",
+    Tooltip = "50% - 200%, applied live",
+    Callback = function(v) Window:SetScale(v / 100) end,
 })
-menuBind:OnChanged(function(k)
-    if typeof(k) == "EnumItem" then Window:SetToggleKey(k) end
+
+ScaleGroup:AddDropdown("LayoutScalePreset", {
+    Text = "Preset",
+    Values = { "50%", "75%", "90%", "100%", "110%", "125%", "150%", "175%", "200%" },
+    Default = "100%",
+    Callback = setScalePct,
+})
+
+-- Live readout. Polls the window rather than tracking its own state, so it
+-- stays honest when you change the scale from the Settings tab instead.
+local readout = ScaleGroup:AddLabel("LayoutReadout", { Text = "scale 100%  -  window 620x440" })
+
+ScaleGroup:AddDivider("Window size")
+
+-- v4.5: Window:SetSize(w, h) / Window:GetSize() - same clamps as the corner
+-- grip, so presets behave exactly like a drag.
+local function sizeBtn(text, w, h)
+    ScaleGroup:AddButton({
+        Text = text,
+        Sub = true,
+        Callback = function() Window:SetSize(w, h) end,
+    })
+end
+sizeBtn("Compact - 460x360", 460, 360)
+sizeBtn("Default - 620x440", 620, 440)
+sizeBtn("Wide - 900x520", 900, 520)
+sizeBtn("Tall - 620x720", 620, 720)
+
+local WhatGroup = Tabs.Layout:AddGroupbox("right", "What to check", "eye", "at each ratio")
+
+WhatGroup:AddLabel({ DoesWrap = true, Text =
+    "Rows are laid out from fixed pixel offsets, so a scale that is too small "
+    .. "starts to crowd text against icons, and one that is too large wastes "
+    .. "the window. Sweep the slider and watch these four things." })
+WhatGroup:AddDivider("1 - Header")
+WhatGroup:AddLabel({ DoesWrap = true, Text =
+    "The brand icon, title and subtitle are centred as one block. They should "
+    .. "stay centred, and the subtitle should stay readable rather than "
+    .. "blurring into the background." })
+WhatGroup:AddDivider("2 - Sidebar")
+WhatGroup:AddLabel({ DoesWrap = true, Text =
+    "The selected tab carries an accent wash, an accent icon, a brighter "
+    .. "label and the accent bar on its left edge. Hovering another tab should "
+    .. "wash it, and never look the same as the selected one." })
+WhatGroup:AddDivider("3 - Rows")
+WhatGroup:AddLabel({ DoesWrap = true, Text =
+    "Labels, values and controls share a baseline. The value column should "
+    .. "stay aligned down the whole groupbox at every scale." })
+WhatGroup:AddDivider("4 - Scroll")
+WhatGroup:AddLabel({ DoesWrap = true, Text =
+    "At 150%+ a long groupbox should scroll, not clip or overlap the footer. "
+    .. "Shrink the window to 460x360 and confirm the same thing." })
+
+-- Density sample: one row of each family, so the four checks above have
+-- something to be judged against.
+local DensityGroup = Tabs.Layout:AddGroupbox("left", "Density sample", "list", "one of each family")
+
+DensityGroup:AddToggle("LayoutSampleToggle", { Text = "Toggle row", Default = true })
+DensityGroup:AddSlider("LayoutSampleSlider", { Text = "Slider row", Min = 0, Max = 100, Default = 65, Suffix = "%" })
+DensityGroup:AddDropdown("LayoutSampleDropdown", { Text = "Dropdown row", Values = { "One", "Two", "Three" }, Default = "One" })
+DensityGroup:AddInput("LayoutSampleInput", { Text = "Input row", Placeholder = "type here", Default = "" })
+DensityGroup:AddButton({ Text = "Button row", Callback = function() end })
+DensityGroup:AddDivider("Divider row")
+DensityGroup:AddLabel("Label row")
+
+-- Keep the slider and the readout in step with the real window scale, whoever
+-- changed it. :Set(v, true) is the silent form, so this cannot re-fire the
+-- callback and fight whoever moved the scale.
+task.spawn(function()
+    while Window and not Window._destroyed do
+        local ok, scale, size = pcall(function()
+            return Window:GetScale(), Window:GetSize()
+        end)
+        if ok and scale then
+            local pct = math.floor(scale * 100 + 0.5)
+            readout:SetText(("scale %d%%  -  window %dx%d"):format(pct, size.X, size.Y))
+            if math.abs(scaleSlider:Get() - pct) >= 1 then scaleSlider:Set(pct, true) end
+        end
+        task.wait(0.25)
+    end
 end)
-
-MenuGroup:AddToggle("AntiAFKToggle", {
-    Text = "Anti-AFK",
-    Description = "prevents the ~20 min idle kick",
-    Default = false,
-    Callback = function(v) EZ:SetAntiAFK(v) end,
-})
-
-MenuGroup:AddButton({ Text = "Toggle panic", Callback = function() EZ:TogglePanic() end })
-MenuGroup:AddButton({ Text = "Unload", Callback = function() EZ:Destroy() end })
-
--- Themes: switch live; ThemeManager persists the choice per brand
-UISettingsTab:AddGroupbox("left", "Themes", "palette"):AddDropdown("ThemeList", {
-    Text = "Theme",
-    Values = ThemeManager:GetThemes(),
-    Default = ThemeManager.Current,
-    Callback = function(v) ThemeManager:SetTheme(v) end,
-})
-
--- Configuration: the full config manager UI (create/load/delete/autoload/JSON)
-SaveManager:BuildConfigSection(UISettingsTab:AddGroupbox("right", "Configuration", "folder-cog"), Window)
--- Profiles are opt-in:
--- SaveManager:BuildProfileUI(UISettingsTab:AddGroupbox("right", "Profiles", "users"), Window)
 
 -- =========================================================================
 --  WIRING (bottom of the file, after every element exists)
@@ -557,8 +635,45 @@ EZ:CreateWatermark({
 SaveManager:LoadAutoloadConfig()
 
 task.defer(function()
-    EZ:Notify({ Title = "EZ Example", Content = "every element, documented in code - read the comments",
-        Duration = 4, Type = "success" })
+    EZ:Notify({ Title = "EZ Example", Content = "Main = every element, Layout = scale lab, Settings = the library's own tab",
+        Duration = 5, Type = "success" })
 end)
+
+--[[
+BUILDING YOUR OWN SETTINGS TAB
+
+AutoSettings = true (the default) is what put the Settings tab in this window.
+If a script needs a different arrangement, pass AutoSettings = false and build
+the same content by hand - every piece of it is public API:
+
+    local SettingsTab = Window:AddTab("Settings", "settings")
+
+    -- Menu: hotkey rebind, anti-afk, panic, unload
+    local MenuGroup = SettingsTab:AddGroupbox("left", "Menu", "wrench")
+    local menuBind = MenuGroup:AddKeybind("MenuKeybind", { Text = "Menu bind",
+        Default = Enum.KeyCode.RightShift })
+    menuBind:OnChanged(function(k)
+        if typeof(k) == "EnumItem" then Window:SetToggleKey(k) end
+    end)
+    MenuGroup:AddToggle("AntiAFKToggle", { Text = "Anti-AFK", Default = false,
+        Callback = function(v) EZ:SetAntiAFK(v) end })
+    MenuGroup:AddButton({ Text = "Toggle panic", Callback = function() EZ:TogglePanic() end })
+    MenuGroup:AddButton({ Text = "Unload", Callback = function() EZ:Destroy() end })
+
+    -- Themes: live switch, persisted by ThemeManager
+    SettingsTab:AddGroupbox("left", "Themes", "palette"):AddDropdown("ThemeList", {
+        Text = "Theme", Values = ThemeManager:GetThemes(), Default = ThemeManager.Current,
+        Callback = function(v) ThemeManager:SetTheme(v) end })
+
+    -- Configuration: the full config manager (create/load/delete/autoload/JSON)
+    SaveManager:BuildConfigSection(
+        SettingsTab:AddGroupbox("right", "Configuration", "folder-cog"), Window)
+    -- Profiles are opt-in:
+    -- SaveManager:BuildProfileUI(SettingsTab:AddGroupbox("right", "Profiles", "users"), Window)
+
+The one-call version is Window:AddSettingsTab({ Title = "Settings", Icon = "settings",
+Menu = true, Themes = true, Configs = true, Profiles = false }) - it reads the
+addons registered on :Bind() and skips whatever is missing.
+]]
 
 return EZ

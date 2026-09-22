@@ -36,6 +36,7 @@ local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive2
 Window:Show() Window:Hide() Window:Toggle()
 Window:Minimize() Window:Restore()      -- delegate to Hide/Show (addon-safe)
 Window:SetScale(n) Window:GetScale()
+Window:SetSize(w, h) Window:GetSize()   -- same clamps as the corner grip
 Window:SetToggleKey(key) Window:GetToggleKey()
 Window:SetBackgroundImage(asset)        -- "rbxassetid://...", numeric id, or "" to clear
 Window:ToggleSidebar()

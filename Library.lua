@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.5.0"
+    _version = "4.5.1"
 }
 
 -- defaults
@@ -2595,6 +2595,21 @@ function EZ:CreateWindow(opts)
         tween(resizeGrip, {BackgroundTransparency = 1}, 0.15)
     end)
 
+    -- Programmatic resize, same clamps as the grip so a script can offer
+    -- layout/size presets without reaching into window._main. Keeps
+    -- restoreSize and the geometry file in sync the way a drag does.
+    function window:SetSize(w, h)
+        local screen = getScreenSize()
+        local newW = clamp(tonumber(w) or main.Size.X.Offset, MIN_W, math.max(MIN_W, screen.X - 20))
+        local newH = clamp(tonumber(h) or main.Size.Y.Offset, MIN_H, math.max(MIN_H, screen.Y - 40))
+        main.Size = UDim2.new(0, math.floor(newW), 0, math.floor(newH))
+        restoreSize = main.Size
+        saveGeometry()
+    end
+    function window:GetSize()
+        return Vector2.new(main.Size.X.Offset, main.Size.Y.Offset)
+    end
+
     -- floating minimize dock: Open / Panic / Keybinds tiles instead of the
     -- old single plain pill. Whole dock stays draggable; QuickBar keeps
     -- working because it drives this frame through window._togglePill.
@@ -3871,18 +3886,38 @@ function EZ:CreateWindow(opts)
             -- optional grip chip (tabboxes have no free header space; parent
             -- to the surface's parent so a UIListLayout row doesn't slot it)
             if makeGrip then
+                -- Drawn from frames, not a glyph: the old "⠿" braille character
+                -- has no coverage in Gotham, so it rendered as an empty box and
+                -- read as a stray element on the strip.
                 local grip = create("TextButton", {
                     Name = "EZPopOutGrip",
-                    Size = UDim2.new(0, 16, 0, 22),
-                    Position = UDim2.new(1, -18, 0, 2),
+                    Size = UDim2.new(0, 14, 0, 20),
+                    Position = UDim2.new(1, -16, 0, 4),
                     BackgroundTransparency = 1,
-                    Text = "⠿",
-                    TextColor3 = theme.TextMuted,
-                    TextSize = 12,
+                    Text = "",
                     AutoButtonColor = false,
                     ZIndex = 10,
                     Parent = surface.Parent or surface,
                 })
+                local dots = {}
+                for row = 0, 2 do
+                    for col = 0, 1 do
+                        dots[#dots + 1] = create("Frame", {
+                            Size = UDim2.new(0, 2, 0, 2),
+                            Position = UDim2.new(0.5, -3 + col * 4, 0.5, -4 + row * 3),
+                            BackgroundColor3 = theme.TextMuted,
+                            BackgroundTransparency = 0.2,
+                            BorderSizePixel = 0,
+                            ZIndex = 11,
+                            Parent = grip,
+                        })
+                    end
+                end
+                local function setGripAlpha(a)
+                    for _, d in ipairs(dots) do d.BackgroundTransparency = a end
+                end
+                grip.MouseEnter:Connect(function() setGripAlpha(0) end)
+                grip.MouseLeave:Connect(function() setGripAlpha(0.2) end)
                 grip.InputBegan:Connect(function(inp)
                     if inp.UserInputType == Enum.UserInputType.MouseButton1
                         or inp.UserInputType == Enum.UserInputType.Touch then
@@ -4612,7 +4647,9 @@ function EZ:CreateWindow(opts)
                 update(value, true)
 
                 slider = { Value = value, _type = "Slider" }
-                function slider:Set(v) update(v) end
+                -- silent is honoured here like every other handle: update()
+                -- has taken it all along, Set() just dropped it
+                function slider:Set(v, silent) update(v, silent) end
                 function slider:Get() return value end
                 function slider:SetText(t)
                     label.Text = t or id
@@ -7146,9 +7183,15 @@ function EZ:CreateWindow(opts)
         -- v4.3: shared TabBox core. Mounts the pill row + tab stack into any
         -- host frame and returns the box. Used by Section:AddTabBox and by
         -- Tab:AddLeftTabbox / AddRightTabbox (top-level structure).
-        mountTabBox = function(host, tabNames)
+        mountTabBox = function(host, tabNames, gripReserve)
+            -- The strip is the top slice of the host box, not a row of floating
+            -- pills: segments touch, share dividers, and the active one fills
+            -- with an accent wash plus a bottom accent rule so it reads as the
+            -- lid of the body underneath.
+            local stripH = mobile and 30 or 28
+            gripReserve = gripReserve or 0
             local pillRow = create("Frame", {
-                Size = UDim2.new(1, 0, 0, mobile and 30 or 26),
+                Size = UDim2.new(1, -gripReserve, 0, stripH),
                 BackgroundTransparency = 1,
                 ZIndex = 7,
                 Parent = host,
@@ -7156,14 +7199,26 @@ function EZ:CreateWindow(opts)
                     create("UIListLayout", {
                         FillDirection = Enum.FillDirection.Horizontal,
                         SortOrder = Enum.SortOrder.LayoutOrder,
-                        Padding = UDim.new(0, 4),
+                        Padding = UDim.new(0, 0), -- segments touch
                     }),
                 }
             })
 
+            -- rule between the strip and the body
+            create("Frame", {
+                Name = "EZTabStripRule",
+                Size = UDim2.new(1, 0, 0, 1),
+                Position = UDim2.new(0, 0, 0, stripH),
+                BackgroundColor3 = theme.Border,
+                BackgroundTransparency = 0.35,
+                BorderSizePixel = 0,
+                ZIndex = 7,
+                Parent = host,
+            })
+
             local stack = create("Frame", {
                 Size = UDim2.new(1, 0, 0, 0),
-                Position = UDim2.new(0, 0, 0, mobile and 34 or 30),
+                Position = UDim2.new(0, 0, 0, stripH + 5),
                 BackgroundTransparency = 1,
                 AutomaticSize = Enum.AutomaticSize.Y,
                 ZIndex = 6,
@@ -7178,6 +7233,7 @@ function EZ:CreateWindow(opts)
 
             local box = { Tabs = {}, Value = tabNames[1], _type = "TabBox" }
             local buttons = {}
+            local segments = {}
 
             -- pure UI switch: frames + segment colours (no flags/callbacks)
             function box:_uiSelect(name)
@@ -7188,23 +7244,13 @@ function EZ:CreateWindow(opts)
                     sec.Frame.Visible = visible
                     -- the per-tab CONTAINER is created Visible=false; without
                     -- this the content of every tab stayed permanently hidden
-                    -- (tabs looked empty no matter which pill was active)
+                    -- (tabs looked empty no matter which segment was active)
                     if sec.Frame.Parent then
                         sec.Frame.Parent.Visible = visible
                     end
                 end
-                for n, btn in buttons do
-                    local active = (n == name)
-                    tween(btn, {
-                        BackgroundTransparency = active and 0.15 or 0.6,
-                    }, 0.15)
-                    btn.TextColor3 = active and theme.Text or theme.TextDim
-                    -- icon-tabs keep their name in a child label
-                    for _, c in btn:GetChildren() do
-                        if c:IsA("TextLabel") then
-                            c.TextColor3 = active and theme.Text or theme.TextDim
-                        end
-                    end
+                for n, seg in segments do
+                    seg.apply(n == name and "active" or "idle")
                 end
             end
 
@@ -7214,7 +7260,7 @@ function EZ:CreateWindow(opts)
                 for _ in buttons do total += 1 end
                 total = math.max(1, total)
                 for _, btn in buttons do
-                    btn.Size = UDim2.new(1 / total, -(4 * (total - 1)) / total, 1, 0)
+                    btn.Size = UDim2.new(1 / total, 0, 1, 0)
                 end
             end
 
@@ -7226,9 +7272,9 @@ function EZ:CreateWindow(opts)
                 idx += 1
 
                 local btn = create("TextButton", {
-                    Size = UDim2.new(1 / idx, -(4 * (idx - 1)) / idx, 1, 0),
+                    Size = UDim2.new(1 / idx, 0, 1, 0),
                     BackgroundColor3 = theme.Surface,
-                    BackgroundTransparency = 0.6,
+                    BackgroundTransparency = 1,
                     Text = icon and "" or name,
                     TextColor3 = theme.TextDim,
                     TextSize = 12,
@@ -7239,13 +7285,42 @@ function EZ:CreateWindow(opts)
                     ZIndex = 8,
                     Parent = pillRow
                 })
-                addCorner(btn, 6)
+                -- no corner: segments are slices of one strip, not pills
+
+                -- divider on the left edge of every segment after the first, so
+                -- a tab added later gets one without having to fix the previous
+                -- last segment
+                if idx > 1 then
+                    create("Frame", {
+                        Size = UDim2.new(0, 1, 1, -12),
+                        Position = UDim2.new(0, 0, 0, 6),
+                        BackgroundColor3 = theme.Border,
+                        BackgroundTransparency = 0.4,
+                        BorderSizePixel = 0,
+                        ZIndex = 9,
+                        Parent = btn,
+                    })
+                end
+
+                -- accent rule that sits on the strip's divider when active, so
+                -- the selected segment reads as the lid of the body below
+                local underline = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, 2),
+                    Position = UDim2.new(0, 0, 1, -2),
+                    BackgroundColor3 = theme.Accent,
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    ZIndex = 10,
+                    Parent = btn,
+                })
+
+                local iconImg, textLabel
                 if icon then
                     local asset = EZ.ResolveIcon ~= nil and EZ:ResolveIcon(icon)
                     if asset then
-                        create("ImageLabel", {
+                        iconImg = create("ImageLabel", {
                             Size = UDim2.new(0, 14, 0, 14),
-                            Position = UDim2.new(0, 6, 0.5, -7),
+                            Position = UDim2.new(0, 8, 0.5, -7),
                             BackgroundTransparency = 1,
                             Image = asset,
                             ImageColor3 = theme.TextDim,
@@ -7253,9 +7328,9 @@ function EZ:CreateWindow(opts)
                             ZIndex = 9,
                             Parent = btn
                         })
-                        create("TextLabel", {
-                            Size = UDim2.new(1, -32, 1, 0),
-                            Position = UDim2.new(0, 26, 0, 0),
+                        textLabel = create("TextLabel", {
+                            Size = UDim2.new(1, -34, 1, 0),
+                            Position = UDim2.new(0, 28, 0, 0),
                             BackgroundTransparency = 1,
                             Text = name,
                             TextColor3 = theme.TextDim,
@@ -7270,8 +7345,35 @@ function EZ:CreateWindow(opts)
                         btn.Text = name
                     end
                 end
+
+                -- one place for the segment's three states, matching the
+                -- sidebar's tab language: accent wash + accent icon + brighter
+                -- label for the active one, a Text-derived wash for hover
+                segments[name] = { apply = function(state)
+                    local active = state == "active"
+                    local hovered = state == "hover"
+                    if active then
+                        tween(btn, {BackgroundColor3 = theme.Accent, BackgroundTransparency = 0.88}, 0.15)
+                    elseif hovered then
+                        tween(btn, {BackgroundColor3 = theme.Text, BackgroundTransparency = 0.94}, 0.1)
+                    else
+                        tween(btn, {BackgroundColor3 = theme.Surface, BackgroundTransparency = 1}, 0.1)
+                    end
+                    local txt = (active or hovered) and theme.Text or theme.TextDim
+                    btn.TextColor3 = txt
+                    if textLabel then tween(textLabel, {TextColor3 = txt}, 0.12) end
+                    if iconImg then tween(iconImg, {ImageColor3 = active and theme.Accent or txt}, 0.12) end
+                    tween(underline, {BackgroundTransparency = active and 0 or 1}, 0.15)
+                end }
                 buttons[name] = btn
                 relayout()
+
+                trackConnection(btn.MouseEnter, function()
+                    if box.Value ~= name then segments[name].apply("hover") end
+                end)
+                trackConnection(btn.MouseLeave, function()
+                    if box.Value ~= name then segments[name].apply("idle") end
+                end)
 
                 local container = create("Frame", {
                     Size = UDim2.new(1, 0, 0, 0),
@@ -7397,7 +7499,8 @@ function EZ:CreateWindow(opts)
             addCorner(host, 10)
             addStroke(host, theme.Border, 1, 0.55)
 
-            local box = mountTabBox(host, opts.Tabs or { "Tab 1", "Tab 2" })
+            -- 22px reserve on the right of the strip for the pop-out grip below
+            local box = mountTabBox(host, opts.Tabs or { "Tab 1", "Tab 2" }, 22)
             box:_uiSelect(box.Value)
 
             -- v4.4: the pill row's grip chip drags the whole tabbox out of the

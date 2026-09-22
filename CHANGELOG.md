@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.5.1
+
+### Added
+- **`Window:SetSize(w, h)` / `Window:GetSize()`** — programmatic resize using
+  the same clamps as the corner grip, keeping `restoreSize` and the geometry
+  file in sync the way a drag does. Lets a script offer layout/size presets
+  without reaching into `window._main`.
+
+### Changed
+- **Tabbox strips read as one segmented control.** The tabs were separate
+  rounded pills floating above a box (`Surface` at 0.6, 4px gaps). Now the
+  strip is the top slice of the box: segments touch, share 1px dividers, and
+  the active one carries an accent wash plus a 2px accent rule on the strip's
+  divider, so it reads as the lid of the body underneath. Hover uses the same
+  `theme.Text`-derived wash as the sidebar tabs.
+- **The tabbox grip renders as dots instead of an empty box.** It drew the
+  braille character `⠿` (U+283F), which Gotham has no glyph for — so it showed
+  as a tofu square that looked like a stray element. It is now six 2px frames,
+  dimmed until you hover it.
+- `slider:Set(v, silent)` now honours `silent` like every other handle.
+  `update()` had taken the parameter all along; `Set()` just dropped it.
+
+### Showcase
+- Rebuilt: `AutoSettings` is left at its default, so the library's own
+  **Settings tab** (Menu / Themes / Configuration, DPI Scale, corner radius,
+  anti-afk) is part of the window instead of a hand-built copy.
+- New **Layout tab** for judging the UI at other ratios: a live scale slider
+  (50–200%), the same 9 presets the Settings dropdown offers, window-size
+  presets via `SetSize`, a density sample of one row per element family, and a
+  readout that polls the real window state so it stays honest when the scale
+  is changed from the Settings tab instead.
+- The hand-built settings wiring is kept at the bottom of the file as a
+  commented reference.
+
 ## 4.5.0
 
 ### Changed
