@@ -1,5 +1,46 @@
 # Changelog
 
+## 4.5.0
+
+### Changed
+- **Header is aligned and centred.** The title/subtitle block is centred as a
+  unit, so a window with a subtitle and one without both sit in the middle of
+  the 46px header (a subtitle-less title used to sit 7px high). The brand icon
+  is 18px, the text column starts 10px after it (the two used to touch), and
+  title/subtitle truncate instead of running under the search bar.
+- **Subtitle uses `TextDim`.** It was `TextMuted`, which is a 2.4:1 contrast
+  ratio at 10px — legible on paper, not on screen.
+- **Tabs: 34px rows, 16px icons.** Icons were 14px in a 32px row, with the
+  label 28px in.
+- **Tab selection and hover are visible.** The selected fill was
+  `Panel` at 0.7 transparency, which composites to `#161621` over the
+  `#151520` sidebar — one step per channel, i.e. invisible. Hover was
+  `Panel` at 0.9, which composites to `#151520`: byte-identical to the
+  background. Selection now uses an accent wash (`#241F3F`), an accent icon,
+  a brightened label and the accent bar; hover is a `Text`-derived wash
+  (`#24242F`) that works on every preset because it derives from the theme's
+  own text colour.
+- **The active-tab bar is flush with the row** (x=4, 20px tall) instead of
+  floating 2px to the left of it at 18px.
+- **Section header icons are 16px** — the two code paths disagreed (16 vs 14).
+- **Search field**: 28px tall, 16px icon.
+
+### Added
+- `EZ:IsRawIcon(ref)` — true when an icon ref is author-supplied art (url,
+  asset id) rather than a name from the monochrome icon pack.
+- `CreateWindow({ IconTint = bool })` — force tinting on or off. Default: pack
+  icons are tinted to the theme, supplied art keeps its own colours. The old
+  behaviour tinted everything, which turned a black logo into an invisible
+  black square on a dark header.
+
+### Fixed
+- The pulse halo no longer renders behind a real header icon — it was sized
+  and positioned for the old 7px dot, and reads as a smudge behind filled art.
+- `tests/live/api-test.luau` scopes its element lookups to the window under
+  test. The ScreenGui is shared by every window, so with a second window open
+  (e.g. the showcase) the slider check grabbed the other window's slider and
+  reported a false failure.
+
 ## 4.4.4
 
 ### Added

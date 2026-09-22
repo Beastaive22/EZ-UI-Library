@@ -40,8 +40,13 @@ local function runAll()
     sld:Set(42.7)
     check("Slider snap", sld.Get() == 43, tostring(sld.Get()))
     -- text entry: click the value label, type, release focus
+    -- scope every lookup to THIS window: the ScreenGui is shared by all
+    -- windows, so a ScreenGui-wide search for "EZSliderValue" grabs whichever
+    -- slider was created first (an open showcase window wins) and the check
+    -- then reads this window's untouched slider
+    local root = w._main or w.ScreenGui
     local valBtn
-    for _, d in w.ScreenGui:GetDescendants() do
+    for _, d in root:GetDescendants() do
         if d.Name == "EZSliderValue" then valBtn = d break end
     end
     if valBtn then
@@ -52,7 +57,7 @@ local function runAll()
                 for _, c in getconnections(valBtn.MouseButton1Click) do pcall(function() c:Fire() end) end
             end)
             task.wait(0.1)
-            for _, d in w.ScreenGui:GetDescendants() do
+            for _, d in root:GetDescendants() do
                 if d.Name == "EZSliderEdit" then box = d break end
             end
             if box then break end
@@ -126,10 +131,10 @@ local function runAll()
     if doBtn then firesignal(doBtn.MouseButton1Click) end
     check("Notify action buttons", clicked == true)
 
-    -- richtext
+    -- richtext (scoped to this window, see the slider note above)
     s:AddLabel({ Text = "rt", RichText = true })
     local richOk = false
-    for _, d in w.ScreenGui:GetDescendants() do
+    for _, d in root:GetDescendants() do
         if d:IsA("TextLabel") and d.Text == "rt" then richOk = d.RichText == true break end
     end
     check("RichText label", richOk)

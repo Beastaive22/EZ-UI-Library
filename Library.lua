@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.4.4"
+    _version = "4.5.0"
 }
 
 -- defaults
@@ -586,17 +586,29 @@ function EZ:SetIcons(iconPack)
     self._icons = iconPack
 end
 
+-- True when ref points at author-supplied art (an asset url or id) instead of
+-- a name from the icon pack. Pack icons are monochrome and get tinted to the
+-- theme; real art keeps its own colours, so tinting it would destroy the image
+-- (a black logo tinted accent just turns invisible against a dark surface).
+function EZ:IsRawIcon(ref)
+    if type(ref) == "number" then return true end
+    if type(ref) ~= "string" then return false end
+    -- rbxasset:// covers getcustomasset results, e.g. ImageManager downloads
+    if ref:find("rbxassetid://") or ref:find("rbxasset://") or ref:find("rbxthumb://") or ref:find("rbxgameasset://") or ref:find("http") then
+        return true
+    end
+    return tonumber(ref) ~= nil
+end
+
 function EZ:ResolveIcon(ref)
     if not ref then return nil end
     if type(ref) == "number" then return "rbxassetid://" .. ref end
     if type(ref) ~= "string" then return nil end
-    -- already an asset url (rbxasset:// covers getcustomasset results, e.g.
-    -- ImageManager downloads)
-    if ref:find("rbxassetid://") or ref:find("rbxasset://") or ref:find("rbxthumb://") or ref:find("rbxgameasset://") or ref:find("http") then
+    -- already an asset url or a numeric id
+    if self:IsRawIcon(ref) then
+        if tonumber(ref) then return "rbxassetid://" .. ref end
         return ref
     end
-    -- numeric string
-    if tonumber(ref) then return "rbxassetid://" .. ref end
     -- lucide name via bound icon pack
     if self._icons then
         local id
@@ -1904,14 +1916,21 @@ function EZ:CreateWindow(opts)
     -- logo dot (gently pulses so window feels "alive"); v4.3: opts.Icon
     -- (lucide name / asset) replaces the dot with a real header icon
     local headerIconAsset = opts.Icon and EZ:ResolveIcon(opts.Icon) or nil
+    -- pack icons are monochrome and follow the theme; supplied art (a logo,
+    -- a url, an asset id) keeps its own colours
+    local headerIconTint = headerIconAsset ~= nil
+        and (opts.IconTint ~= nil and opts.IconTint or not EZ:IsRawIcon(opts.Icon))
+    local headerPad = mobile and 12 or 16
+    local headerIconSize = mobile and 20 or 18
+    local logoSlotX = headerPad
     local logoDot
     if headerIconAsset then
         logoDot = create("ImageLabel", {
-            Size = UDim2.new(0, 16, 0, 16),
-            Position = UDim2.new(0, 14, 0.5, -8),
+            Size = UDim2.new(0, headerIconSize, 0, headerIconSize),
+            Position = UDim2.new(0, logoSlotX, 0.5, -headerIconSize / 2),
             BackgroundTransparency = 1,
             Image = headerIconAsset,
-            ImageColor3 = theme.Accent,
+            ImageColor3 = headerIconTint and theme.Accent or Color3.new(1, 1, 1),
             ScaleType = Enum.ScaleType.Fit,
             BorderSizePixel = 0,
             ZIndex = 6,
@@ -1920,7 +1939,7 @@ function EZ:CreateWindow(opts)
     else
         logoDot = create("Frame", {
             Size = UDim2.new(0, 7, 0, 7),
-            Position = UDim2.new(0, 16, 0.5, -3),
+            Position = UDim2.new(0, logoSlotX + 5, 0.5, -3),
             BackgroundColor3 = theme.Accent,
             BorderSizePixel = 0,
             ZIndex = 6,
@@ -1928,71 +1947,93 @@ function EZ:CreateWindow(opts)
         })
         addCorner(logoDot, 4)
     end
-    -- pulse halo
-    local logoHalo = create("Frame", {
-        Size = UDim2.new(0, 7, 0, 7),
-        Position = UDim2.new(0, 16, 0.5, -3),
-        BackgroundColor3 = theme.Accent,
-        BackgroundTransparency = 0.6,
-        BorderSizePixel = 0,
-        ZIndex = 5,
-        Parent = header,
-    })
-    addCorner(logoHalo, 4)
-    -- pulse only while the window is actually on screen; the old loop kept
-    -- queueing tweens for a hidden/minimized window forever
-    task.spawn(function()
-        while logoHalo.Parent do
-            if main.Visible then
-                tween(logoHalo, {Size = UDim2.new(0, 16, 0, 16), Position = UDim2.new(0, 12, 0.5, -8), BackgroundTransparency = 1}, 1.4, Enum.EasingStyle.Sine)
-                task.wait(1.4)
-                if not logoHalo.Parent then break end
-                logoHalo.Size = UDim2.new(0, 7, 0, 7)
-                logoHalo.Position = UDim2.new(0, 16, 0.5, -3)
-                logoHalo.BackgroundTransparency = 0.6
-                task.wait(0.4)
-            else
-                task.wait(0.5)
+    -- pulse halo. Only for the dot: a halo behind real art is glow for its own
+    -- sake, and it reads as a smudge when the art is a filled logo.
+    local logoHalo
+    if not headerIconAsset then
+        logoHalo = create("Frame", {
+            Size = UDim2.new(0, 7, 0, 7),
+            Position = UDim2.new(0, logoSlotX + 5, 0.5, -3),
+            BackgroundColor3 = theme.Accent,
+            BackgroundTransparency = 0.6,
+            BorderSizePixel = 0,
+            ZIndex = 5,
+            Parent = header,
+        })
+        addCorner(logoHalo, 4)
+        -- pulse only while the window is actually on screen; the old loop kept
+        -- queueing tweens for a hidden/minimized window forever
+        task.spawn(function()
+            while logoHalo.Parent do
+                if main.Visible then
+                    tween(logoHalo, {Size = UDim2.new(0, 16, 0, 16), Position = UDim2.new(0, logoSlotX, 0.5, -8), BackgroundTransparency = 1}, 1.4, Enum.EasingStyle.Sine)
+                    task.wait(1.4)
+                    if not logoHalo.Parent then break end
+                    logoHalo.Size = UDim2.new(0, 7, 0, 7)
+                    logoHalo.Position = UDim2.new(0, logoSlotX + 5, 0.5, -3)
+                    logoHalo.BackgroundTransparency = 0.6
+                    task.wait(0.4)
+                else
+                    task.wait(0.5)
+                end
             end
-        end
-    end)
+        end)
+    end
+
+    -- search bar width is declared here because the title below has to stop
+    -- before it
+    local searchBarW = mobile and 28 or 160
+
+    -- title + optional subtitle are centred as one block, so a window with a
+    -- subtitle and one without both sit optically in the middle of the header
+    -- (the title used to be pinned at y=8 for both cases, which left a
+    -- subtitle-less window visibly high)
+    local headerTextX = logoSlotX + headerIconSize + 10
+    local titleH, subH, subGap = 18, 14, 2
+    local blockH = opts.SubTitle and (titleH + subGap + subH) or titleH
+    local blockTop = math.floor((46 - blockH) / 2)
+    -- stop 12px short of the search bar: long titles truncate instead of
+    -- running underneath it
+    local headerTextW = -(headerTextX + 128 + searchBarW)
 
     -- title
     create("TextLabel", {
-        Size = UDim2.new(0, 200, 0, 16),
-        Position = UDim2.new(0, 30, 0, 8),
+        Size = UDim2.new(1, headerTextW, 0, titleH),
+        Position = UDim2.new(0, headerTextX, 0, blockTop),
         BackgroundTransparency = 1,
         Text = opts.Title or "EZ",
         TextColor3 = theme.Text,
         TextSize = 14,
         Font = Enum.Font.GothamBold,
         TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
         ZIndex = 6,
         Parent = header
     })
 
-    -- subtitle
+    -- subtitle (TextDim, not TextMuted: muted is a 2.4:1 contrast at 10px)
     if opts.SubTitle then
         create("TextLabel", {
-            Size = UDim2.new(0, 200, 0, 12),
-            Position = UDim2.new(0, 30, 0, 24),
+            Size = UDim2.new(1, headerTextW, 0, subH),
+            Position = UDim2.new(0, headerTextX, 0, blockTop + titleH + subGap),
             BackgroundTransparency = 1,
             Text = opts.SubTitle,
-            TextColor3 = theme.TextMuted,
+            TextColor3 = theme.TextDim,
             TextSize = 10,
             Font = Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
             ZIndex = 6,
             Parent = header
         })
     end
 
     -- search bar (header right, before the 3 buttons; collapses to icon on mobile)
-    local searchBarW = mobile and 28 or 160
+    local searchBarH = mobile and 26 or 28
     local searchBar = create("Frame", {
         Name = "EZSearchBar",
-        Size = UDim2.new(0, searchBarW, 0, 26),
-        Position = UDim2.new(1, -(110 + searchBarW + 6), 0.5, -13),
+        Size = UDim2.new(0, searchBarW, 0, searchBarH),
+        Position = UDim2.new(1, -(110 + searchBarW + 6), 0.5, -searchBarH / 2),
         BackgroundColor3 = theme.Surface,
         BackgroundTransparency = mobile and 0.4 or 0.1,
         BorderSizePixel = 0,
@@ -2004,8 +2045,8 @@ function EZ:CreateWindow(opts)
 
     -- search icon
     create("ImageLabel", {
-        Size = UDim2.new(0, 14, 0, 14),
-        Position = UDim2.new(0, 6, 0.5, -7),
+        Size = UDim2.new(0, 16, 0, 16),
+        Position = UDim2.new(0, 7, 0.5, -8),
         BackgroundTransparency = 1,
         Image = "rbxassetid://121018724060431",
         ImageColor3 = theme.TextMuted,
@@ -2015,8 +2056,8 @@ function EZ:CreateWindow(opts)
     })
 
     local searchBox = create("TextBox", {
-        Size = UDim2.new(1, -28, 1, 0),
-        Position = UDim2.new(0, 24, 0, 0),
+        Size = UDim2.new(1, -30, 1, 0),
+        Position = UDim2.new(0, 27, 0, 0),
         BackgroundTransparency = 1,
         Text = "",
         PlaceholderText = "Search...",
@@ -2372,11 +2413,13 @@ function EZ:CreateWindow(opts)
         }
     })
 
-    -- active tab indicator (height adapts to tab content)
-    local indicatorH = mobile and 28 or 18
+    -- active tab indicator. Flush with the tab button's left edge (the list
+    -- pads 4) so it reads as part of the selected row instead of floating in
+    -- the gap beside it.
+    local indicatorH = mobile and 26 or 20
     local tabIndicator = create("Frame", {
         Size = UDim2.new(0, 3, 0, indicatorH),
-        Position = UDim2.new(0, 2, 0, 8),
+        Position = UDim2.new(0, 4, 0, 8),
         BackgroundColor3 = theme.Accent,
         BorderSizePixel = 0,
         ZIndex = 7,
@@ -3287,10 +3330,14 @@ function EZ:CreateWindow(opts)
 
         -- resolve icon (can be lucide name, asset id, or url)
         local iconUrl = EZ:ResolveIcon(icon)
+        -- pack icons are monochrome and follow the theme; supplied art does not
+        local iconTint = iconUrl ~= nil and not EZ:IsRawIcon(icon)
 
-        -- tab button
+        -- tab button. 34px row (46 on mobile): enough for a 16px nav icon and
+        -- a 12px label without either feeling pinched.
+        local tabRowH = mobile and 46 or 34
         local tabBtn = create("TextButton", {
-            Size = UDim2.new(1, 0, 0, mobile and 44 or 32),
+            Size = UDim2.new(1, 0, 0, tabRowH),
             BackgroundColor3 = theme.Panel,
             BackgroundTransparency = 1,
             Text = "",
@@ -3303,13 +3350,13 @@ function EZ:CreateWindow(opts)
 
         -- icon (if provided)
         local iconImg
-        local iconSize = mobile and 20 or 14
+        local iconSize = mobile and 22 or 16
         local textOffset = 10
         if iconUrl and mobile then
             -- mobile: icon centered top, text below
             iconImg = create("ImageLabel", {
                 Size = UDim2.new(0, iconSize, 0, iconSize),
-                Position = UDim2.new(0.5, -iconSize/2, 0, 4),
+                Position = UDim2.new(0.5, -iconSize/2, 0, 6),
                 BackgroundTransparency = 1,
                 Image = iconUrl,
                 ImageColor3 = theme.TextDim,
@@ -3321,7 +3368,7 @@ function EZ:CreateWindow(opts)
             -- pc: icon left, text right
             iconImg = create("ImageLabel", {
                 Size = UDim2.new(0, iconSize, 0, iconSize),
-                Position = UDim2.new(0, 8, 0.5, -iconSize/2),
+                Position = UDim2.new(0, 10, 0.5, -iconSize/2),
                 BackgroundTransparency = 1,
                 Image = iconUrl,
                 ImageColor3 = theme.TextDim,
@@ -3329,11 +3376,13 @@ function EZ:CreateWindow(opts)
                 ZIndex = 7,
                 Parent = tabBtn,
             })
-            textOffset = 8 + iconSize + 6
+            textOffset = 10 + iconSize + 8
         end
 
         local tabLabel = create("TextLabel", {
-            Size = mobile and UDim2.new(1, 0, 0, 12) or UDim2.new(1, -(textOffset + 4), 1, 0),
+            -- right inset also reserves room for the count badge, so a long
+            -- tab name truncates instead of running underneath it
+            Size = mobile and UDim2.new(1, 0, 0, 12) or UDim2.new(1, -(textOffset + 22), 1, 0),
             Position = mobile and UDim2.new(0, 0, 1, -15) or UDim2.new(0, textOffset, 0, 0),
             BackgroundTransparency = 1,
             Text = mobile and name:sub(1, 3) or name,
@@ -3341,6 +3390,7 @@ function EZ:CreateWindow(opts)
             TextSize = mobile and 9 or 12,
             Font = Enum.Font.GothamMedium,
             TextXAlignment = mobile and Enum.TextXAlignment.Center or Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
             ZIndex = 7,
             Parent = tabBtn
         })
@@ -3349,7 +3399,7 @@ function EZ:CreateWindow(opts)
         local badge = create("Frame", {
             AnchorPoint = Vector2.new(1, 0),
             Size = UDim2.new(0, 14, 0, 14),
-            Position = UDim2.new(1, -(mobile and 4 or 6), 0, mobile and 3 or 4),
+            Position = UDim2.new(1, -(mobile and 4 or 6), 0, mobile and 3 or 3),
             BackgroundColor3 = theme.Accent,
             BorderSizePixel = 0,
             Visible = false,
@@ -3434,27 +3484,50 @@ function EZ:CreateWindow(opts)
         tab._label = tabLabel
         tab._icon = iconImg
 
+        -- One place for the tab's three visual states. Selection is carried by
+        -- four signals at once - an accent wash, an accent icon, a brightened
+        -- label and the accent bar - because the old single "Panel at 0.7"
+        -- fill composited to #161621 over a #151520 sidebar, a difference of
+        -- one step per channel that nobody could see.
+        local function applyState(state)
+            local active = state == "active"
+            local hovered = state == "hover"
+            if active then
+                tween(tabBtn, {BackgroundColor3 = theme.Accent, BackgroundTransparency = 0.86}, 0.15)
+            elseif hovered then
+                tween(tabBtn, {BackgroundColor3 = theme.Text, BackgroundTransparency = 0.93}, 0.1)
+            else
+                tween(tabBtn, {BackgroundColor3 = theme.Panel, BackgroundTransparency = 1}, 0.1)
+            end
+            tween(tabLabel, {TextColor3 = (active or hovered) and theme.Text or theme.TextDim}, 0.12)
+            if iconImg then
+                if iconTint then
+                    local col = active and theme.Accent or (hovered and theme.Text or theme.TextDim)
+                    tween(iconImg, {ImageColor3 = col, ImageTransparency = 0}, 0.12)
+                else
+                    -- supplied art keeps its own colours, so fade instead
+                    tween(iconImg, {ImageTransparency = active and 0 or (hovered and 0.15 or 0.45)}, 0.12)
+                end
+            end
+        end
+        tab._applyState = applyState
+
         local function activate()
             -- deactivate all
             for _, t in self.Tabs do
                 t._content.Visible = false
-                tween(t._label, {TextColor3 = theme.TextDim}, 0.15)
-                tween(t._btn, {BackgroundTransparency = 1}, 0.15)
-                if t._icon then tween(t._icon, {ImageColor3 = theme.TextDim}, 0.15) end
+                if t._applyState then t._applyState("idle") end
             end
             -- activate this
             tabContent.Visible = true
-            tween(tabLabel, {TextColor3 = theme.Text}, 0.15)
-            -- filled highlight so the selected tab reads clearly (Obsidian-style)
-            tween(tabBtn, {BackgroundTransparency = 0.7}, 0.15)
-            if iconImg then tween(iconImg, {ImageColor3 = theme.Text}, 0.15) end
+            applyState("active")
 
             -- Move indicator, centre aligned to whatever the tab btn actually
             -- has (icon-only, text-only, or both). Prefer the button's real
             -- position: index arithmetic drifts as soon as the tab list has
             -- enough tabs to scroll. AbsolutePosition is in screen pixels, so
             -- divide out the window's UIScale to get the local offset back.
-            local btnH = mobile and 44 or 32
+            local btnH = tabRowH
             local centerY
             if tabBtn.AbsoluteSize.Y > 0 and uiScale.Scale > 0 then
                 centerY = (tabBtn.AbsolutePosition.Y - sidebar.AbsolutePosition.Y) / uiScale.Scale
@@ -3466,7 +3539,7 @@ function EZ:CreateWindow(opts)
                 centerY = listTop + (tabIdx - 1) * slot + btnH / 2
             end
             local yPos = centerY - indicatorH / 2
-            tween(tabIndicator, {Position = UDim2.new(0, 2, 0, yPos)}, 0.32, Enum.EasingStyle.Back)
+            tween(tabIndicator, {Position = UDim2.new(0, 4, 0, yPos)}, 0.32, Enum.EasingStyle.Back)
 
             self.ActiveTab = tab
         end
@@ -3474,16 +3547,23 @@ function EZ:CreateWindow(opts)
         tab._activate = activate
         trackConnection(tabBtn.MouseButton1Click, activate)
 
-        -- hover
+        -- hover / press. The old hover tweened Panel to 0.9 transparency,
+        -- which composites to the same colour as the sidebar (#151520 over
+        -- #151520) - i.e. nothing happened. A light wash off theme.Text
+        -- actually shows up on every theme.
         trackConnection(tabBtn.MouseEnter, function()
-            if self.ActiveTab ~= tab then
-                tween(tabBtn, {BackgroundTransparency = 0.9}, 0.1)
-            end
+            if self.ActiveTab ~= tab then applyState("hover") end
         end)
         trackConnection(tabBtn.MouseLeave, function()
+            if self.ActiveTab ~= tab then applyState("idle") end
+        end)
+        trackConnection(tabBtn.MouseButton1Down, function()
             if self.ActiveTab ~= tab then
-                tween(tabBtn, {BackgroundTransparency = 1}, 0.1)
+                tween(tabBtn, {BackgroundTransparency = 0.88}, 0.06)
             end
+        end)
+        trackConnection(tabBtn.MouseButton1Up, function()
+            if self.ActiveTab ~= tab then applyState("hover") end
         end)
 
         table.insert(self.Tabs, tab)
@@ -3940,23 +4020,26 @@ function EZ:CreateWindow(opts)
                 })
                 section._header = sectionHeader
 
-                -- optional header icon (groupboxes pass one; Obsidian-style)
+                -- optional header icon (groupboxes pass one; Obsidian-style).
+                -- 16px to match the other section-header icon path, which
+                -- already used 16 - the two disagreed before.
                 local headerIcon
-                local labelX = 10
+                local labelX = 12
                 if opts2.icon then
                     local iconAsset = EZ:ResolveIcon(opts2.icon)
                     if iconAsset then
                         headerIcon = create("ImageLabel", {
-                            Size = UDim2.new(0, 14, 0, 14),
-                            Position = UDim2.new(0, 10, 0.5, -7),
+                            Size = UDim2.new(0, 16, 0, 16),
+                            Position = UDim2.new(0, 12, 0.5, -8),
                             BackgroundTransparency = 1,
                             Image = iconAsset,
-                            ImageColor3 = theme.Accent,
+                            -- supplied art keeps its own colours
+                            ImageColor3 = EZ:IsRawIcon(opts2.icon) and Color3.new(1, 1, 1) or theme.Accent,
                             ScaleType = Enum.ScaleType.Fit,
                             ZIndex = 7,
                             Parent = sectionHeader,
                         })
-                        labelX = 30
+                        labelX = 12 + 16 + 8
                     end
                 end
 

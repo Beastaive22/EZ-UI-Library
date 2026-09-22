@@ -20,6 +20,8 @@ local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive2
 | `ToggleKey` | `Enum.KeyCode.RightShift` | Hide/show hotkey — keyboard **or** `Enum.UserInputType.MouseButton1/2/3` |
 | `ToggleIcon` | — | Lucide name / asset ref for the dock's Open tile |
 | `ToggleText` | `"V"` | Open tile fallback text when no icon resolves |
+| `Icon` | — | Header brand icon: Lucide name, asset id, or url. Falls back to the pulsing accent dot |
+| `IconTint` | auto | Tint the header icon to the theme. Auto = pack icons yes, supplied art no (tinting a black logo to accent makes it vanish on a dark header) |
 | `Scale` | `1` | Initial UI scale (0.5–2) |
 | `SidebarToggle` | `true` | Show the sidebar-collapse button |
 | `Gestures` | `true` | Mobile swipe-to-switch-tabs |
@@ -394,3 +396,10 @@ Bell in the header + slide-out history panel.
 `rbxassetid://`, plain numeric ids, or urls — including `rbxasset://` strings
 from `getcustomasset`, so an `EZ.ImageManager.AddAsset` result can be passed
 straight to any `Icon` field.
+
+`EZ:IsRawIcon(ref)` tells the two apart: `true` for author-supplied art (urls,
+ids), `false` for a name from the pack. The library uses it to decide whether
+an icon may be recoloured — pack icons are monochrome and get tinted per state,
+supplied art keeps its own colours (and is faded with `ImageTransparency`
+instead). The same rule decides the header icon tint; override it per window
+with `CreateWindow({ IconTint = ... })`.
