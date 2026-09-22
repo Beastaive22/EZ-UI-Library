@@ -45,7 +45,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.4.2"
+    _version = "4.4.3"
 }
 
 -- defaults
@@ -3676,8 +3676,25 @@ function EZ:CreateWindow(opts)
                 })
                 addCorner(popFrame, 10)
                 addStroke(popFrame, theme.Border, 1, 0.35)
-                frame.Parent = popFrame
-                frame.Size = UDim2.fromScale(1, 1)
+                -- v4.4.3: the body scrolls. The section keeps its natural
+                -- (automatic) height, so shrinking the panel scrolls instead
+                -- of letting content spill out of the floating window.
+                local body = create("ScrollingFrame", {
+                    Name = "EZPopOutBody",
+                    Size = UDim2.fromScale(1, 1),
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    ScrollBarThickness = 3,
+                    ScrollBarImageColor3 = theme.Border,
+                    CanvasSize = UDim2.new(0, 0, 0, 0),
+                    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                    ScrollingDirection = Enum.ScrollingDirection.Y,
+                    ZIndex = 200,
+                    Parent = popFrame,
+                })
+                addCorner(body, 10)
+                frame.Parent = body
+                frame.Size = UDim2.new(1, 0, 0, 0)
                 frame.BackgroundTransparency = 0.35
                 frame.ZIndex = 201
 

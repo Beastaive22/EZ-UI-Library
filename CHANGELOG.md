@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.4.3
+
+### Fixed
+- **Floating panels no longer spill content when resized small.** The
+  section keeps its natural height inside a scrolling body, so shrinking the
+  panel scrolls the content (with a thin scrollbar) instead of letting rows
+  stick out of the floating window.
+
 ## 4.4.2
 
 ### Fixed

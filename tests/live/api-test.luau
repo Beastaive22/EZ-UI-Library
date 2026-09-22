@@ -413,6 +413,7 @@ local function runAll()
 
     ordB:SetPoppedOut(true)
     local panel = ordB.Frame.Parent
+    if panel and panel.Name == "EZPopOutBody" then panel = panel.Parent end
     local rz = panel and panel:FindFirstChild("EZPopOutResize")
     check("Pop-out resize grip", rz ~= nil)
     if rz then
@@ -423,6 +424,18 @@ local function runAll()
         check("Pop-out resizes", panel.AbsoluteSize.X > baseSize.X,
             tostring(baseSize.X) .. " -> " .. tostring(panel.AbsoluteSize.X))
         fireAll(UIS.InputEnded, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(600, 560, 0) })
+        -- shrink far below the content: the body must scroll, not spill out
+        local body = panel:FindFirstChild("EZPopOutBody")
+        check("Pop-out has scrolling body", body ~= nil and body:IsA("ScrollingFrame"))
+        if body then
+            fireAll(rz.InputBegan, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(500, 500, 0) })
+            fireAll(UIS.InputChanged, { UserInputType = Enum.UserInputType.MouseMovement, Position = Vector3.new(100, 100, 0) })
+            fireAll(UIS.InputEnded, { UserInputType = Enum.UserInputType.MouseButton1, Position = Vector3.new(100, 100, 0) })
+            task.wait(0.1)
+            check("Small panel clips content", body.AbsoluteSize.Y <= panel.AbsoluteSize.Y + 1,
+                tostring(body.AbsoluteSize.Y) .. " vs " .. tostring(panel.AbsoluteSize.Y))
+            check("Section scrolls inside body", ordB.Frame.Parent == body and body.ClipsDescendants == true)
+        end
     end
     ordB:TogglePoppedOut()
 
