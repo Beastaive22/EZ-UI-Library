@@ -1,5 +1,31 @@
 # Changelog
 
+## 4.0.0
+
+### Added
+- **Notifications v2** — `EZ:Notify` now returns a notification **handle**
+  (a forwarding table: property reads/writes still work on the card, method
+  calls go through `handle.Frame:X()`):
+  - **Persistent notifications** — `Duration = false` (or `math.huge`) keeps
+    the card until `:Dismiss()`/`:Destroy()` or an action button dismisses it.
+  - **Live updates** — `:ChangeTitle(t)`, `:ChangeDescription(t)` (card
+    re-measures its height automatically).
+  - **Step/progress notifications** — `TotalSteps = n` renders a progress bar;
+    `:ChangeStep(n)` tweens the fill + updates the `n/total` label.
+  - **Sounds** — `SoundId` (+ `Volume`, default 3) plays when the card shows.
+- **Two-layer custom cursor** — the cursor is now a real overlay
+  (crosshair layer + optional icon layer) instead of `Mouse.Icon`:
+  `EZ.Cursor:ChangeCrossColor/ResetCross/ChangeIcon/ChangeIconColor/
+  ChangeIconSize/ResetIcon/ResetCursor`; `ChangeIcon` takes a Lucide name,
+  asset id or URL; the icon layer replaces the crosshair while active.
+  `EZ:SetCursorIcon/SetCursorEnabled` map onto the new system. Survives
+  respawn (`ResetOnSpawn = false`), and `EZ:Destroy()` cleans the overlay.
+
+### Changed
+- `EZ:Notify` returns the forwarding handle instead of the raw card frame —
+  property-style usage keeps working; method calls on the card itself
+  (e.g. `:GetDescendants`) go through `handle.Frame`.
+
 ## 3.9.0
 
 **Uniform element handles + Obsidian-parity element upgrades.**

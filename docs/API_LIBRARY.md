@@ -84,8 +84,16 @@ EZ:SetFont(font)          -- "BuilderSans", "GothamBold", "Code", "Jura", ... (E
                           -- or an Enum.Font; "Default" resets. Sweeps all UI incl. new elements.
 EZ:SetCornerRadius(n)     -- 0-20 live corner radius (14 = designed per-element radii)
 EZ:SetNotificationSide("Left" | "Right")
-EZ:SetCursorIcon(asset)   -- custom cursor image ("rbxassetid://...")
-EZ:SetCursorEnabled(bool) -- apply/clear it (re-applies on respawn)
+-- Custom cursor — v4.0 two-layer overlay (crosshair + optional icon):
+EZ.Cursor:ChangeCrossColor(Color3.fromRGB(255, 80, 80))
+EZ.Cursor:ResetCross()
+EZ.Cursor:ChangeIcon("crosshair")      -- lucide name, asset id or URL; "" = reset
+EZ.Cursor:ChangeIconColor(Color3.fromRGB(80, 255, 120))
+EZ.Cursor:ChangeIconSize(UDim2.fromOffset(32, 32))
+EZ.Cursor:ResetIcon()
+EZ.Cursor:ResetCursor()                -- resets both layers
+EZ:SetCursorEnabled(true)              -- toggle (Settings ▸ Custom Cursor)
+EZ:SetCursorIcon("rbxassetid://...")   -- alias of EZ.Cursor:ChangeIcon
 EZ:SetTheme(partialTable) -- merge e.g. { Accent = Color3... }; full UI recolour
 EZ:GetTheme()             -- live theme table
 EZ.Themes                 -- 8 built-in presets (Midnight, Catppuccin, ...)
@@ -241,13 +249,24 @@ EZ:Notify({
     Title = "Hi", Content = "...", Duration = 4,
     Type = "info|success|warning|error",
     Buttons = { { Text = "Open", Callback = function() end } }, -- action row; taking an action dismisses the card
+    Duration = false,          -- v4.0: persistent (no auto-dismiss)
+    TotalSteps = 4,            -- v4.0: renders a progress bar
+    SoundId = 12221967,        -- v4.0: plays when the card shows
+    Volume = 3,                -- v4.0 sound volume (default 3)
 })
 EZ.MaxNotifications = 5   -- max cards on screen
+
+local n = EZ:Notify({ Title = "Job", TotalSteps = 4, Duration = false }) -- v4.0 handle
+n:ChangeTitle("New title")          -- v4.0: live update
+n:ChangeDescription("New text")     -- v4.0: card re-measures its height
+n:ChangeStep(2)                     -- v4.0: tween the progress fill + "2/4" label
+n:Dismiss()                         -- v4.0: alias Destroy — closes the card
+n.Frame                             -- the card frame (property reads/writes forward)
 ```
 
 Cards show a type-colored Lucide icon (when the icon pack resolves one —
 `info/circle-check/triangle-alert/octagon-x` with fallbacks) or a colored dot;
-auto-dismiss.
+auto-dismiss unless persistent.
 
 ---
 

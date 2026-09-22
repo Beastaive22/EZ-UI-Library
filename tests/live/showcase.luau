@@ -547,6 +547,45 @@ local function runAll()
         task.delay(1, function() pcall(function() pGB:Show() end) end)
     end })
 
+    -- v4.0 demos: persistent/step notifications + two-layer cursor
+    pSec:AddButton({ Text = "Persistent progress notification", Tooltip = "v4.0: Duration=false + :ChangeStep + :ChangeTitle",
+        Callback = function()
+            local n = EZ:Notify({
+                Title = "Loading session", Content = "initializing...", Duration = false,
+                Type = "info", TotalSteps = 4, SoundId = 12221967, Volume = 0.2,
+            })
+            task.spawn(function()
+                for step = 1, 4 do
+                    n:ChangeStep(step)
+                    n:ChangeDescription(("step %d of 4..."):format(step))
+                    task.wait(0.8)
+                end
+                n:ChangeTitle("Done")
+                n:ChangeDescription("this card stays until you press the button")
+                n:ChangeStep(4)
+            end)
+            task.delay(4.5, function()
+                pcall(function()
+                    EZ:Notify({ Title = "Cleanup", Content = "closing the loader card", Duration = 3, Type = "info" })
+                end)
+            end)
+        end })
+    pSec:AddButton({ Text = "Two-layer cursor (4s)", Tooltip = "v4.0: crosshair + icon layers, colors and sizes",
+        Callback = function()
+            EZ.Cursor:ChangeCrossColor(Color3.fromRGB(255, 80, 80))
+            EZ.Cursor:ChangeIcon("crosshair")
+            EZ.Cursor:ChangeIconColor(Color3.fromRGB(120, 255, 140))
+            EZ.Cursor:ChangeIconSize(UDim2.fromOffset(36, 36))
+            EZ:SetCursorEnabled(true)
+            task.delay(2, function() pcall(function() EZ.Cursor:ResetIcon() end) end)
+            task.delay(4, function()
+                pcall(function()
+                    EZ.Cursor:ResetCursor()
+                    EZ:SetCursorEnabled(false)
+                end)
+            end)
+        end })
+
     ---------------------------------------------------------------- SELF-TEST TAB
     -- WHEN: an in-UI regression runner. Click "Run all checks" (it also runs
     -- once on load) and read the PASS/FAIL console; results also go to
@@ -601,7 +640,11 @@ local function runAll()
         end
         assert(box, "editor did not open")
         box.Text = "88"
-        box:ReleaseFocus()
+        -- ReleaseFocus is unreliable when the OS window is backgrounded:
+        -- fire the FocusLost commit connection directly instead
+        pcall(function()
+            for _, c in getconnections(box.FocusLost) do pcall(function() c:Fire(true) end) end
+        end)
         task.wait(0.1)
         assert(h.Get() == 88, "typed value not committed: " .. tostring(h.Get()))
     end)
@@ -734,7 +777,7 @@ local function runAll()
         local card = EZ:Notify({ Title = "selftest", Content = "", Duration = 3,
             Buttons = { { Text = "Go", Callback = function() clicked = true end } } })
         local doBtn
-        for _, d in card:GetDescendants() do
+        for _, d in card.Frame:GetDescendants() do
             if d:IsA("TextButton") and d.Text == "Go" then doBtn = d break end
         end
         assert(doBtn, "action button missing")
@@ -785,6 +828,33 @@ local function runAll()
         task.wait(0.1)
         assert(#EZ.Windows == before, "X did not remove only its window")
         assert(EZ._destroyed == false)
+    end)
+    test("Notifications v2 (4.0)", function()
+        local n = EZ:Notify({ Title = "v2", Content = "persistent probe", Duration = false, TotalSteps = 4 })
+        n:ChangeTitle("v2 renamed")
+        n:ChangeDescription("live update")
+        n:ChangeStep(2)
+        task.wait(0.15)
+        assert(n.Frame.Parent ~= nil, "persistent card dismissed itself")
+        local stepLbl
+        for _, d in n.Frame:GetDescendants() do
+            if d:IsA("TextLabel") and d.Text == "2/4" then stepLbl = d break end
+        end
+        assert(stepLbl, "step label missing")
+        n:Destroy()
+        task.wait(0.6) -- dismiss tween (0.25) + destroy delay (0.3)
+        assert(n.Frame.Parent == nil, "Destroy failed")
+    end)
+    test("Cursor v2 (4.0)", function()
+        EZ.Cursor:ChangeCrossColor(Color3.fromRGB(255, 80, 80))
+        EZ.Cursor:ChangeIcon("crosshair")
+        EZ:SetCursorEnabled(true)
+        assert(EZ._cursorGui ~= nil and EZ._cursorCrossLabel ~= nil, "cursor overlay missing")
+        EZ.Cursor:ChangeIconSize(UDim2.fromOffset(40, 40))
+        assert(EZ._cursorIconLabel.Size == UDim2.fromOffset(40, 40))
+        EZ.Cursor:ResetCursor()
+        EZ:SetCursorEnabled(false)
+        assert(EZ._cursorGui == nil, "cursor gui not cleaned")
     end)
     test("Uniform handles (3.9)", function()
         local h = EZ._elements.Demo36Slider

@@ -44,7 +44,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.9.0"
+    _version = "4.0.0"
 }
 
 -- defaults
@@ -518,7 +518,7 @@ end
 pcall(function()
     local parent = (gethui and gethui()) or Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if parent then
-        for _, name in {"EZUI", "EZNotifs", "EZQuickBar"} do
+        for _, name in {"EZUI", "EZNotifs", "EZQuickBar", "EZCursor"} do
             local old = parent:FindFirstChild(name)
             if old then old:Destroy() end
         end
@@ -615,7 +615,10 @@ function EZ:Notify(opts)
     opts = opts or {}
     local title = opts.Title or "EZ"
     local content = opts.Content or ""
-    local dur = opts.Duration or 4
+    -- v4.0: Duration = false (or math.huge) keeps the notification on screen
+    -- until :Dismiss()/:Destroy() or an action button dismisses it
+    local persistent = opts.Duration == false or opts.Duration == math.huge
+    local dur = persistent and nil or (opts.Duration or 4)
     local ntype = opts.Type or "info"
     if self._notifHook then pcall(self._notifHook, opts) end
     local theme = self.Theme
@@ -694,7 +697,7 @@ function EZ:Notify(opts)
         })
     end
 
-    create("TextLabel", {
+    local titleLbl = create("TextLabel", {
         Size = UDim2.new(1, -12, 0, 18),
         BackgroundTransparency = 1,
         Text = title,
@@ -720,6 +723,41 @@ function EZ:Notify(opts)
         AutomaticSize = Enum.AutomaticSize.Y,
         Parent = card
     })
+
+    -- v4.0: step/progress notifications (TotalSteps + :ChangeStep)
+    local totalSteps = (type(opts.TotalSteps) == "number" and opts.TotalSteps > 0) and opts.TotalSteps or nil
+    local stepRow, stepFill, stepLbl
+    local currentStep = math.max(0, tonumber(opts.CurrentStep) or 0)
+    if totalSteps then
+        stepRow = create("Frame", {
+            Size = UDim2.new(1, -24, 0, 8),
+            Position = UDim2.new(0, 12, 0, 0),
+            BackgroundColor3 = theme.Panel,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            Parent = card,
+        })
+        addCorner(stepRow, 4)
+        stepFill = create("Frame", {
+            Size = UDim2.new(0, 0, 1, 0),
+            BackgroundColor3 = accentColor,
+            BorderSizePixel = 0,
+            ZIndex = 1,
+            Parent = stepRow,
+        })
+        addCorner(stepFill, 4)
+        stepLbl = create("TextLabel", {
+            Size = UDim2.new(1, -24, 0, 12),
+            Position = UDim2.new(0, 12, 0, 10),
+            BackgroundTransparency = 1,
+            Text = ("0/%d"):format(totalSteps),
+            TextColor3 = theme.TextMuted,
+            TextSize = 10,
+            Font = Enum.Font.GothamMedium,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = card,
+        })
+    end
 
     -- shared dismiss used by auto-expiry and action buttons alike
     local function dismissCard()
@@ -794,19 +832,81 @@ function EZ:Notify(opts)
 
     -- Animate in on the next frame. TextBounds is still empty on the frame the
     -- label is created, so measuring immediately clipped every wrapped line.
-    task.defer(function()
+    -- Extracted so :ChangeDescription/:ChangeStep can re-measure live.
+    local function relayout()
         if not card.Parent then return end
         local textH = math.max(contentLbl.TextBounds.Y, contentLbl.AbsoluteSize.Y, 14)
-        if actionRow then
-            actionRow.Position = UDim2.new(0, 12, 0, 28 + textH + 6)
+        local cursorY = 28 + textH + 6
+        if stepRow then
+            stepRow.Position = UDim2.new(0, 12, 0, cursorY)
+            stepLbl.Position = UDim2.new(0, 12, 0, cursorY + 10)
+            cursorY += 26
         end
-        tween(card, {Size = UDim2.new(1, 0, 0, 30 + textH + (actionRow and 28 or 0) + 10)}, 0.3)
-    end)
+        if actionRow then
+            actionRow.Position = UDim2.new(0, 12, 0, cursorY)
+        end
+        local cardH = 30 + textH + (stepRow and 26 or 0) + (actionRow and 28 or 0) + 10
+        tween(card, {Size = UDim2.new(1, 0, 0, cardH)}, 0.3)
+    end
+    task.defer(relayout)
 
-    -- auto dismiss
-    task.delay(dur, dismissCard)
+    -- v4.0: step progress (TotalSteps + :ChangeStep)
+    local function setStep(n)
+        if not totalSteps then return end
+        currentStep = math.clamp(tonumber(n) or 0, 0, totalSteps)
+        local pct = currentStep / totalSteps
+        if stepFill then tween(stepFill, {Size = UDim2.new(pct, 0, 1, 0)}, 0.2) end
+        if stepLbl then stepLbl.Text = ("%d/%d"):format(currentStep, totalSteps) end
+        task.defer(function() relayout() end)
+    end
+    if totalSteps and currentStep > 0 then
+        task.defer(function() setStep(currentStep) end)
+    end
 
-    return card
+    -- v4.0: optional notification sound (SoundId = asset id, Volume default 3)
+    if opts.SoundId then
+        pcall(function()
+            local sound = Instance.new("Sound")
+            sound.SoundId = (type(opts.SoundId) == "number")
+                and ("rbxassetid://" .. opts.SoundId) or tostring(opts.SoundId)
+            sound.Volume = tonumber(opts.Volume) or 3
+            sound.Parent = card
+            sound:Play()
+        end)
+    end
+
+    -- auto dismiss (skipped for persistent notifications)
+    if not persistent then
+        task.delay(dur, dismissCard)
+    end
+
+    -- v4.0: notification handle. Forwarding metatable keeps old frame-style
+    -- usage working (handle.Size etc. read/write the card) while adding
+    -- ChangeTitle / ChangeDescription / ChangeStep / Dismiss / Destroy.
+    local handle
+    handle = setmetatable({
+        Frame = card,
+        ChangeTitle = function(_, t)
+            titleLbl.Text = tostring(t)
+            return handle
+        end,
+        ChangeDescription = function(_, t)
+            contentLbl.Text = tostring(t)
+            task.defer(function() relayout() end)
+            return handle
+        end,
+        ChangeStep = function(_, n)
+            setStep(n)
+            return handle
+        end,
+        Dismiss = function() dismissCard() end,
+        Destroy = function() dismissCard() end,
+    }, {
+        __index = function(_, k) return card[k] end,
+        __newindex = function(_, k, v) card[k] = v end,
+    })
+
+    return handle
 end
 
 -- ~~---------
@@ -6680,49 +6780,140 @@ function EZ:SetNotificationSide(side)
     end
 end
 
--- Custom cursor. Configure the image once, then flip the toggle.
-function EZ:SetCursorIcon(asset)
-    if type(asset) == "number" then
-        asset = "rbxassetid://" .. asset
-    end
-    self._cursorIcon = (type(asset) == "string" and asset ~= "") and asset or nil
-    if self._cursorEnabled then self:_applyCursor() end
+-- Custom cursor. v4.0: two-layer overlay (crosshair + optional icon) that
+-- follows the mouse every frame — Mouse.Icon can only ever show one image,
+-- so colors/sizes/two layers need real gui. The old Mouse.Icon API
+-- (SetCursorIcon/SetCursorEnabled) maps onto ChangeIcon/SetCursorEnabled.
+function EZ:_ensureCursorGui()
+    if self._cursorGui and self._cursorGui.Parent then return self._cursorGui end
+    local ok, screenGui = pcall(function()
+        local parent = (gethui and gethui()) or Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        return create("ScreenGui", {
+            Name = "EZCursor",
+            DisplayOrder = 30000, -- above notifications (10000) + always-on-top (25000)
+            IgnoreGuiInset = true,
+            ResetOnSpawn = false,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            Parent = parent,
+        })
+    end)
+    if not ok or not screenGui then return nil end
+    self._cursorGui = screenGui
+
+    local cross = create("ImageLabel", {
+        Name = "Cross",
+        Size = UDim2.fromOffset(24, 24),
+        BackgroundTransparency = 1,
+        Image = (self.ResolveIcon ~= nil and self:ResolveIcon("crosshair")) or "",
+        ImageColor3 = self._cursorCrossColor or Color3.new(1, 1, 1),
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 1,
+        Parent = screenGui,
+    })
+    local icon = create("ImageLabel", {
+        Name = "Icon",
+        Size = self._cursorIconSize or UDim2.fromOffset(32, 32),
+        BackgroundTransparency = 1,
+        Image = (self._cursorIcon ~= nil and self:ResolveIcon(self._cursorIcon)) or "",
+        ImageColor3 = self._cursorIconColor or Color3.new(1, 1, 1),
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 2,
+        Parent = screenGui,
+    })
+    self._cursorCrossLabel = cross
+    self._cursorIconLabel = icon
+
+    trackConnection(RunService.RenderStepped, function()
+        local pos = UserInputService:GetMouseLocation()
+        cross.Position = UDim2.fromOffset(pos.X - cross.AbsoluteSize.X / 2, pos.Y - cross.AbsoluteSize.Y / 2)
+        icon.Position = UDim2.fromOffset(pos.X - icon.AbsoluteSize.X / 2, pos.Y - icon.AbsoluteSize.Y / 2)
+        -- the icon layer replaces the crosshair while it has an image
+        cross.ImageTransparency = (icon.Image ~= "") and 1 or 0
+    end)
+    return screenGui
 end
 
 function EZ:_applyCursor()
-    local icon = (self._cursorEnabled and self._cursorIcon) or ""
-    pcall(function()
-        local lp = Players.LocalPlayer
-        if lp then lp:GetMouse().Icon = icon end
-    end)
+    local gui2 = self._cursorEnabled and self:_ensureCursorGui() or nil
+    if gui2 then
+        local cross = self._cursorCrossLabel
+        local icon = self._cursorIconLabel
+        if cross then
+            cross.ImageColor3 = self._cursorCrossColor or Color3.new(1, 1, 1)
+        end
+        if icon then
+            icon.Image = (self._cursorIcon ~= nil and self:ResolveIcon(self._cursorIcon)) or ""
+            icon.ImageColor3 = self._cursorIconColor or Color3.new(1, 1, 1)
+            icon.Size = self._cursorIconSize or UDim2.fromOffset(32, 32)
+        end
+    end
+end
+
+function EZ:SetCursorIcon(asset)
+    self:ChangeIcon(asset)
 end
 
 function EZ:SetCursorEnabled(on)
     self._cursorEnabled = on == true
-    if self._cursorEnabled and not self._cursorIcon then
-        -- nothing to show yet; nudge once instead of silently doing nothing
-        pcall(function()
-            self:Notify({
-                Title = "EZ",
-                Content = "Set a cursor image first: EZ:SetCursorIcon(\"rbxassetid://...\")",
-                Duration = 3,
-                Type = "warning",
-            })
-        end)
-    end
-    -- reapply after respawns; hooked once, not per toggle
-    if not self._cursorHooked then
-        self._cursorHooked = true
-        local lp = Players.LocalPlayer
-        if lp then
-            trackConnection(lp.CharacterAdded, function()
-                if self._cursorEnabled then
-                    task.defer(function() self:_applyCursor() end)
-                end
+    if self._cursorEnabled then
+        if not self._cursorIcon and not self._cursorCrossColor then
+            -- nothing to show yet; nudge once instead of silently doing nothing
+            pcall(function()
+                self:Notify({
+                    Title = "EZ",
+                    Content = "Set a cursor first: EZ.Cursor:ChangeIcon(\"crosshair\")",
+                    Duration = 3,
+                    Type = "warning",
+                })
             end)
         end
+        self:_applyCursor()
+    else
+        if self._cursorGui then
+            pcall(function() self._cursorGui:Destroy() end)
+            self._cursorGui = nil
+            self._cursorCrossLabel = nil
+            self._cursorIconLabel = nil
+        end
     end
-    self:_applyCursor()
+end
+
+-- v4.0: Obsidian-style cursor API (two layers: crosshair + optional icon).
+EZ.Cursor = {}
+function EZ.Cursor:ChangeCrossColor(color)
+    EZ._cursorCrossColor = color
+    if EZ._cursorCrossLabel then EZ._cursorCrossLabel.ImageColor3 = color end
+end
+function EZ.Cursor:ResetCross()
+    EZ._cursorCrossColor = Color3.new(1, 1, 1)
+    if EZ._cursorCrossLabel then EZ._cursorCrossLabel.ImageColor3 = Color3.new(1, 1, 1) end
+end
+function EZ.Cursor:ChangeIcon(iconRef)
+    if type(iconRef) == "number" then iconRef = "rbxassetid://" .. iconRef end
+    if iconRef == nil or iconRef == "" then
+        EZ._cursorIcon = nil
+    else
+        EZ._cursorIcon = iconRef
+    end
+    if EZ._cursorEnabled then EZ:_applyCursor() end
+end
+function EZ.Cursor:ChangeIconColor(color)
+    EZ._cursorIconColor = color
+    if EZ._cursorIconLabel then EZ._cursorIconLabel.ImageColor3 = color end
+end
+function EZ.Cursor:ChangeIconSize(size)
+    EZ._cursorIconSize = size
+    if EZ._cursorIconLabel then EZ._cursorIconLabel.Size = size end
+end
+function EZ.Cursor:ResetIcon()
+    EZ._cursorIcon = nil
+    EZ._cursorIconColor = Color3.new(1, 1, 1)
+    EZ._cursorIconSize = UDim2.fromOffset(32, 32)
+    if EZ._cursorEnabled then EZ:_applyCursor() end
+end
+function EZ.Cursor:ResetCursor()
+    EZ.Cursor:ResetCross()
+    EZ.Cursor:ResetIcon()
 end
 
 -- Curated font families (Settings ▸ Font Face). Enum-backed fonts resolve
@@ -7707,6 +7898,15 @@ function EZ:Destroy()
         pcall(function() self._keybindMenu:Destroy() end)
         self._keybindMenu = nil
     end
+
+    -- v4.0: the cursor overlay is a separate ScreenGui — destroy it too
+    if self._cursorGui then
+        pcall(function() self._cursorGui:Destroy() end)
+        self._cursorGui = nil
+        self._cursorCrossLabel = nil
+        self._cursorIconLabel = nil
+    end
+    self._antiAFK = false
 
     -- Keep the root ScreenGuis alive but empty. This makes EZ reusable after
     -- EZ:Destroy() / the close button instead of leaving dead ScreenGui

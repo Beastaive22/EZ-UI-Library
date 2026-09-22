@@ -59,7 +59,11 @@ local function runAll()
         end
         if box then
             box.Text = "88"
-            box:ReleaseFocus()
+            -- ReleaseFocus is unreliable when the OS window is backgrounded:
+            -- fire the FocusLost commit connection directly instead
+            pcall(function()
+                for _, c in getconnections(box.FocusLost) do pcall(function() c:Fire(true) end) end
+            end)
             task.wait(0.1)
             check("Slider text entry", sld.Get() == 88, tostring(sld.Get()))
         else
@@ -113,7 +117,7 @@ local function runAll()
     local card = EZ:Notify({ Title = "h", Content = "b", Duration = 5,
         Buttons = { { Text = "Go", Callback = function() clicked = true end } } })
     local doBtn
-    for _, d in card:GetDescendants() do
+    for _, d in card.Frame:GetDescendants() do
         if d:IsA("TextButton") and d.Text == "Go" then doBtn = d break end
     end
     if doBtn then firesignal(doBtn.MouseButton1Click) end
@@ -223,6 +227,42 @@ local function runAll()
         tostring((EZ._antiAFKCount or 0)) .. " vs " .. tostring(aaBefore + 1))
     EZ:SetAntiAFK(false)
     check("Anti-AFK off", EZ:IsAntiAFK() == false)
+
+    -- Notifications v2 (4.0): persistent + live updates + steps + sounds
+    local n2 = EZ:Notify({
+        Title = "N2 probe", Content = "persistent", Duration = false,
+        TotalSteps = 4, SoundId = 12221967, Volume = 0.2, Type = "info",
+    })
+    n2:ChangeTitle("N2 renamed")
+    n2:ChangeDescription("updated live")
+    n2:ChangeStep(3)
+    task.wait(0.15)
+    check("Notify persistent stays", n2.Frame.Parent ~= nil)
+    check("Notify ChangeTitle", n2.Frame:FindFirstChildWhichIsA("TextLabel", true) ~= nil)
+    local t2 = {}
+    for _, d in n2.Frame:GetDescendants() do
+        if d:IsA("TextLabel") and d.Text == "3/4" then t2[#t2+1] = d end
+    end
+    check("Notify ChangeStep", #t2 >= 1)
+    n2:Destroy()
+    task.wait(0.6) -- dismiss tween (0.25) + destroy delay (0.3)
+    check("Notify Destroy", n2.Frame.Parent == nil)
+    -- frame-style BC: the handle forwards reads to the card
+    local n3 = EZ:Notify({ Title = "BC", Content = "b", Duration = false })
+    check("Notify frame-BC", n3.BackgroundColor3 ~= nil)
+    n3:Destroy()
+
+    -- Cursor v2 (4.0): two layers + resets
+    EZ.Cursor:ChangeCrossColor(Color3.fromRGB(255, 0, 0))
+    EZ.Cursor:ChangeIcon("crosshair")
+    EZ:SetCursorEnabled(true)
+    check("Cursor v2 layers", EZ._cursorGui ~= nil and EZ._cursorCrossLabel ~= nil and EZ._cursorIconLabel ~= nil)
+    EZ.Cursor:ChangeIconSize(UDim2.fromOffset(48, 48))
+    check("Cursor icon size", EZ._cursorIconLabel.Size == UDim2.fromOffset(48, 48))
+    EZ.Cursor:ResetIcon()
+    check("Cursor ResetIcon", EZ._cursorIcon == nil)
+    EZ:SetCursorEnabled(false)
+    check("Cursor disabled", EZ._cursorGui == nil)
 
     w:Destroy()
 end
