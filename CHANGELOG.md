@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.2.0
+
+### Added
+- **Loading screen** — `EZ:CreateLoading({Title, Icon, TotalSteps, Message, Description, IconTweenTime})`:
+  modal overlay (own ScreenGui, above everything) with a rotating icon,
+  title, message + description, progress bar with `n/total` counter, and an
+  optional sidebar. Methods: `SetMessage`, `SetDescription`,
+  `SetCurrentStep`, `SetTotalSteps`, `SetLoadingIcon` (lucide/asset),
+  `SetLoadingIconTweenTime` (0 stops rotation), `SetLoadingIconColor`,
+  `ShowSidebarPage(bool)`, `ShowErrorPage(bool)`, `SetErrorMessage`,
+  `SetErrorButtons` (dialog-style `{Title, Variant, Callback}` array or map),
+  `Destroy` / `Continue` (alias; restores the main window if one exists).
+  **`Loading.Sidebar` supports every element builder** (it borrows an
+  invisible host window's section internally). Creating a new loader replaces
+  the previous one; `EZ:Destroy()` cleans it.
+- **Keybind menu tap-toggles** — toggle-mode rows get a clickable checkbox
+  (mobile parity); `EZ.ShowToggleFrameInKeybinds = false` hides it.
+- **Groupbox/section pop-out** — `:SetPoppedOut(bool, floatPos?)`,
+  `:TogglePoppedOut()`, `:IsPoppedOut()`, `:SetMaxPopOutHeight(h)`,
+  `:SetPopOutWidth(w)`: the section floats in a draggable panel (grip in the
+  header), clamped to the screen. Simplified vs Obsidian: the whole section
+  floats (no separate scrolling body).
+
 ## 4.1.0
 
 ### Added

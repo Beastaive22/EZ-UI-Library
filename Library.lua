@@ -44,7 +44,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.1.0"
+    _version = "4.2.0"
 }
 
 -- defaults
@@ -518,7 +518,7 @@ end
 pcall(function()
     local parent = (gethui and gethui()) or Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
     if parent then
-        for _, name in {"EZUI", "EZNotifs", "EZQuickBar", "EZCursor"} do
+        for _, name in {"EZUI", "EZNotifs", "EZQuickBar", "EZCursor", "EZLoading"} do
             local old = parent:FindFirstChild(name)
             if old then old:Destroy() end
         end
@@ -3669,6 +3669,118 @@ function EZ:CreateWindow(opts)
                 end
                 function section:Show() return section:SetVisible(true) end
                 function section:Hide() return section:SetVisible(false) end
+
+                -- v4.2: pop-out — undock the section into a floating panel.
+                -- Simplified vs Obsidian: the whole section floats (grip-drag,
+                -- width/height overrides, screen clamp) without a separate
+                -- scrolling body.
+                local popOutFrame, popOutW, popOutH
+                local poDrag, poStart, poOrigin
+                local dockedParent = sectionFrame.Parent
+                local dockedOrder = sectionFrame.LayoutOrder
+                local function clampPopOutPos(pos)
+                    local screen = getScreenSize()
+                    local w = (popOutFrame and popOutFrame.AbsoluteSize.X) or (popOutW or 300)
+                    local h = (popOutFrame and popOutFrame.AbsoluteSize.Y) or 200
+                    return UDim2.new(
+                        0, clamp(pos.X.Offset, 0, math.max(0, screen.X - w)),
+                        0, clamp(pos.Y.Offset, 0, math.max(0, screen.Y - h))
+                    )
+                end
+                local function setPoppedOut(on, floatPos)
+                    on = on == true
+                    if on and not popOutFrame then
+                        popOutFrame = create("Frame", {
+                            Name = "EZPopOut",
+                            Size = UDim2.new(
+                                0, popOutW or math.max(sectionFrame.AbsoluteSize.X, 280),
+                                0, popOutH or math.max(sectionFrame.AbsoluteSize.Y, 180)
+                            ),
+                            Position = floatPos or UDim2.new(0, 80, 0, 80),
+                            BackgroundColor3 = theme.Base,
+                            BackgroundTransparency = 0.05,
+                            BorderSizePixel = 0,
+                            ZIndex = 200,
+                            Parent = gui,
+                        })
+                        addCorner(popOutFrame, 10)
+                        addStroke(popOutFrame, theme.Border, 1, 0.35)
+                        sectionFrame.Parent = popOutFrame
+                        sectionFrame.Size = UDim2.fromScale(1, 1)
+                        sectionFrame.BackgroundTransparency = 0.35
+                        sectionFrame.ZIndex = 201
+
+                        local grip = create("TextButton", {
+                            Name = "EZPopOutGrip",
+                            Size = UDim2.new(0, 14, 0, 14),
+                            Position = UDim2.new(1, -40, 0.5, -7),
+                            BackgroundTransparency = 1,
+                            Text = "⠿",
+                            TextColor3 = theme.TextMuted,
+                            TextSize = 12,
+                            AutoButtonColor = false,
+                            ZIndex = 202,
+                            Parent = sectionHeader,
+                        })
+                        grip.InputBegan:Connect(function(inp)
+                            if inp.UserInputType == Enum.UserInputType.MouseButton1
+                                or inp.UserInputType == Enum.UserInputType.Touch then
+                                poDrag = true
+                                poStart = Vector2.new(inp.Position.X, inp.Position.Y)
+                                poOrigin = popOutFrame.Position
+                            end
+                        end)
+                        if floatPos then
+                            popOutFrame.Position = clampPopOutPos(floatPos)
+                        end
+                    elseif not on and popOutFrame then
+                        local grip = sectionHeader:FindFirstChild("EZPopOutGrip")
+                        if grip then grip:Destroy() end
+                        sectionFrame.Parent = dockedParent
+                        sectionFrame.Size = UDim2.new(1, 0, 0, 0)
+                        sectionFrame.LayoutOrder = dockedOrder
+                        sectionFrame.BackgroundTransparency = 0.4
+                        sectionFrame.ZIndex = 5
+                        popOutFrame:Destroy()
+                        popOutFrame = nil
+                    end
+                    section._poppedOut = on
+                    return section
+                end
+                function section:SetPoppedOut(on, floatPos) return setPoppedOut(on, floatPos) end
+                function section:TogglePoppedOut() return setPoppedOut(popOutFrame == nil) end
+                function section:IsPoppedOut() return popOutFrame ~= nil end
+                function section:SetMaxPopOutHeight(h)
+                    popOutH = tonumber(h)
+                    if popOutFrame and popOutH then
+                        popOutFrame.Size = UDim2.new(popOutFrame.Size.X.Scale, popOutFrame.Size.X.Offset, 0, popOutH)
+                        sectionFrame.ClipsDescendants = true
+                    end
+                    return section
+                end
+                function section:SetPopOutWidth(w)
+                    popOutW = tonumber(w)
+                    if popOutFrame and popOutW then
+                        popOutFrame.Size = UDim2.new(0, popOutW, popOutFrame.Size.Y.Scale, popOutFrame.Size.Y.Offset)
+                    end
+                    return section
+                end
+                trackConnection(UserInputService.InputChanged, function(inp)
+                    if not poDrag or not popOutFrame then return end
+                    if inp.UserInputType ~= Enum.UserInputType.MouseMovement
+                        and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+                    local dx = inp.Position.X - poStart.X
+                    local dy = inp.Position.Y - poStart.Y
+                    popOutFrame.Position = clampPopOutPos(UDim2.new(0, poOrigin.X.Offset + dx, 0, poOrigin.Y.Offset + dy))
+                end)
+                trackConnection(UserInputService.InputEnded, function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1
+                        or inp.UserInputType == Enum.UserInputType.Touch then
+                        poDrag = false
+                    end
+                end)
+                section._dockedParent = sectionFrame.Parent
+                section._dockedOrder = sectionFrame.LayoutOrder
 
                 -- arrow (chevron icon when an icon pack is bound, "v" fallback)
                 local chevron = EZ:ResolveIcon("chevron-down")
@@ -7660,6 +7772,43 @@ function EZ:CreateKeybindMenu()
                     Parent = rows
                 })
             local isActive = el.IsActive and el:IsActive()
+            -- v4.2: tap-friendly toggle checkbox in the menu (mobile parity;
+            -- EZ.ShowToggleFrameInKeybinds = false hides it)
+            if el.GetMode and el:GetMode() == "Toggle" and EZ.ShowToggleFrameInKeybinds ~= false then
+                local box = create("TextButton", {
+                    Size = UDim2.new(0, 14, 0, 14),
+                    Position = UDim2.new(1, -114, 0.5, -7),
+                    BackgroundColor3 = isActive and theme.Accent or theme.Surface,
+                    BackgroundTransparency = isActive and 0 or 0.35,
+                    Text = "",
+                    BorderSizePixel = 0,
+                    AutoButtonColor = false,
+                    ZIndex = 183,
+                    Parent = row,
+                })
+                addCorner(box, 3)
+                addStroke(box, theme.Border, 1, 0.5)
+                if isActive then
+                    local check = EZ:ResolveIcon("check")
+                    if check then
+                        create("ImageLabel", {
+                            Size = UDim2.new(1, -4, 1, -4),
+                            Position = UDim2.new(0, 2, 0, 2),
+                            BackgroundTransparency = 1,
+                            Image = check,
+                            ImageColor3 = Color3.new(1, 1, 1),
+                            ScaleType = Enum.ScaleType.Fit,
+                            ZIndex = 184,
+                            Parent = box,
+                        })
+                    end
+                end
+                box.MouseButton1Click:Connect(function()
+                    if el.SetActive and el.IsActive then
+                        el:SetActive(not el:IsActive())
+                    end
+                end)
+            end
             if el.GetMode and el:GetMode() == "Toggle" then
                 create("Frame", {
                     Size = UDim2.new(0, 6, 0, 6),
@@ -7680,8 +7829,9 @@ function EZ:CreateKeybindMenu()
             if #idText > 16 then
                 idText = idText:sub(1, 15) .. "…"
             end
+            local labelW = (el.GetMode and el:GetMode() == "Toggle" and EZ.ShowToggleFrameInKeybinds ~= false) and -128 or -110
             create("TextLabel", {
-                Size = UDim2.new(1, -110, 1, 0),
+                Size = UDim2.new(1, labelW, 1, 0),
                 Position = UDim2.new(0, 12, 0, 0),
                 BackgroundTransparency = 1,
                 Text = idText,
@@ -8091,6 +8241,369 @@ function EZ.ImageManager.GetAsset(name)
 end
 
 -- ~~
+-- LOADING SCREEN (v4.2)
+-- Modal multi-stage loader: rotating icon, title, message + description,
+-- progress bar with step counter, optional sidebar with EVERY element
+-- builder, and an error page with footer-style buttons.
+-- The sidebar borrows an invisible host window's section internally — that
+-- is how it gets the full element set without duplicating the builders.
+-- ~~
+function EZ:CreateLoading(opts)
+    opts = opts or {}
+    local ez = self -- methods below take the handle as `self`; EZ lives here
+    local theme = self.Theme
+    local title = opts.Title or "Loading"
+    local totalSteps = math.max(0, tonumber(opts.TotalSteps) or 0)
+    local currentStep = 0
+    local spinTime = tonumber(opts.IconTweenTime) or 1.6
+
+    if self._loading then pcall(function() self._loading:Destroy() end) end
+
+    local parent = (gethui and gethui()) or Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not parent then return nil end
+
+    local screen = create("ScreenGui", {
+        Name = "EZLoading",
+        DisplayOrder = 20000,
+        IgnoreGuiInset = true,
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = parent,
+    })
+    create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = theme.Base,
+        BackgroundTransparency = 0.25,
+        BorderSizePixel = 0,
+        Active = true, -- modal: swallow clicks behind the overlay
+        ZIndex = 1,
+        Parent = screen,
+    })
+
+    local cardW = 380
+    local card = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(cardW, 172),
+        BackgroundColor3 = theme.Surface,
+        BackgroundTransparency = 0.05,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = screen,
+    })
+    addCorner(card, 12)
+    addStroke(card, theme.Border, 1, 0.4)
+
+    local mainBox = create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 3,
+        Parent = card,
+    })
+
+    local iconLabel = create("ImageLabel", {
+        Size = UDim2.fromOffset(28, 28),
+        Position = UDim2.new(0, 18, 0, 20),
+        BackgroundTransparency = 1,
+        Image = self:ResolveIcon(opts.Icon or "loader") or "",
+        ImageColor3 = theme.Accent,
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -76, 0, 20),
+        Position = UDim2.new(0, 56, 0, 24),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = theme.Text,
+        TextSize = 14,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+    local messageLbl = create("TextLabel", {
+        Size = UDim2.new(1, -36, 0, 16),
+        Position = UDim2.new(0, 18, 0, 58),
+        BackgroundTransparency = 1,
+        Text = opts.Message or "Starting...",
+        TextColor3 = theme.TextDim,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+    local descLbl = create("TextLabel", {
+        Size = UDim2.new(1, -36, 0, 0),
+        Position = UDim2.new(0, 18, 0, 76),
+        BackgroundTransparency = 1,
+        Text = opts.Description or "",
+        TextColor3 = theme.TextMuted,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+    local barBg = create("Frame", {
+        Size = UDim2.new(1, -124, 0, 6),
+        Position = UDim2.new(0, 18, 0, 112),
+        BackgroundColor3 = theme.Panel,
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+    addCorner(barBg, 3)
+    local barFill = create("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = theme.Accent,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+        Parent = barBg,
+    })
+    addCorner(barFill, 3)
+    local stepLbl = create("TextLabel", {
+        Size = UDim2.new(0, 90, 0, 14),
+        Position = UDim2.new(1, -108, 0, 108),
+        BackgroundTransparency = 1,
+        Text = totalSteps > 0 and ("0/%d"):format(totalSteps) or "",
+        TextColor3 = theme.TextMuted,
+        TextSize = 10,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 4,
+        Parent = mainBox,
+    })
+
+    -- error page (hidden until ShowErrorPage(true))
+    local errorPage = create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 6,
+        Parent = card,
+    })
+    local errorIcon = create("ImageLabel", {
+        Size = UDim2.fromOffset(26, 26),
+        Position = UDim2.new(0, 18, 0, 22),
+        BackgroundTransparency = 1,
+        Image = self:ResolveIcon("octagon-x") or self:ResolveIcon("triangle-alert") or "",
+        ImageColor3 = theme.Error,
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 7,
+        Parent = errorPage,
+    })
+    local errorLbl = create("TextLabel", {
+        Size = UDim2.new(1, -36, 0, 0),
+        Position = UDim2.new(0, 18, 0, 58),
+        BackgroundTransparency = 1,
+        Text = "Something went wrong.",
+        TextColor3 = theme.Text,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 7,
+        Parent = errorPage,
+    })
+    local errorBtnRow = create("Frame", {
+        Size = UDim2.new(1, -36, 0, 24),
+        Position = UDim2.new(0, 18, 0, 128),
+        BackgroundTransparency = 1,
+        ZIndex = 7,
+        Parent = errorPage,
+        Children = {
+            create("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 6),
+            }),
+        },
+    })
+
+    -- sidebar: invisible host window -> its section becomes the sidebar body
+    local sidebarBox = create("Frame", {
+        Size = UDim2.new(0, 260, 1, -36),
+        Position = UDim2.new(0, 400, 0, 18),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 3,
+        Parent = card,
+    })
+    local sidebarDivider = create("Frame", {
+        Size = UDim2.new(0, 1, 1, -36),
+        Position = UDim2.new(0, 390, 0, 18),
+        BackgroundColor3 = theme.Border,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 3,
+        Parent = card,
+    })
+    local sidebarHost = self:CreateWindow({
+        Title = "EZ Loading",
+        AutoSettings = false,
+        Width = 280,
+        Height = 420,
+    })
+    sidebarHost._pillSuppressed = true
+    pcall(function() sidebarHost:Hide() end)
+    local sidebarSection = sidebarHost:AddTab("Sidebar", "loader"):AddSection("Sidebar", "every element works here")
+    pcall(function()
+        sidebarSection.Frame.Parent = sidebarBox
+        sidebarSection.Frame.Size = UDim2.new(1, 0, 0, 0)
+    end)
+
+    local spinConn
+    local function applySpin()
+        if spinConn then
+            pcall(function() spinConn:Disconnect() end)
+            spinConn = nil
+        end
+        if spinTime <= 0 then return end
+        spinConn = RunService.RenderStepped:Connect(function(dt)
+            if iconLabel.Parent then
+                iconLabel.Rotation = (iconLabel.Rotation + (360 / spinTime) * dt) % 360
+            end
+        end)
+        self:GiveSignal(spinConn)
+    end
+    applySpin()
+
+    local loading
+    loading = {
+        Sidebar = sidebarSection,
+        SetMessage = function(_, t)
+            messageLbl.Text = tostring(t or "")
+            return loading
+        end,
+        SetDescription = function(_, t)
+            descLbl.Text = tostring(t or "")
+            return loading
+        end,
+        SetCurrentStep = function(_, n)
+            n = math.clamp(tonumber(n) or 0, 0, math.max(totalSteps, tonumber(n) or 0))
+            currentStep = n
+            if totalSteps > 0 then
+                tween(barFill, {Size = UDim2.new(math.clamp(n / totalSteps, 0, 1), 0, 1, 0)}, 0.2)
+            end
+            stepLbl.Text = totalSteps > 0 and ("%d/%d"):format(n, totalSteps) or ""
+            return loading
+        end,
+        SetTotalSteps = function(_, n)
+            totalSteps = math.max(0, tonumber(n) or 0)
+            stepLbl.Text = totalSteps > 0 and ("%d/%d"):format(currentStep, totalSteps) or ""
+            return loading
+        end,
+        SetLoadingIcon = function(_, ref)
+            local asset = self:ResolveIcon(ref)
+            if asset then iconLabel.Image = asset end
+            return loading
+        end,
+        SetLoadingIconTweenTime = function(_, t)
+            spinTime = tonumber(t) or 0
+            applySpin()
+            return loading
+        end,
+        SetLoadingIconColor = function(_, c)
+            if typeof(c) == "Color3" then iconLabel.ImageColor3 = c end
+            return loading
+        end,
+        ShowSidebarPage = function(_, on)
+            on = on == true
+            sidebarBox.Visible = on
+            sidebarDivider.Visible = on
+            cardW = on and 660 or 380
+            tween(card, {Size = UDim2.fromOffset(cardW, card.Size.Y.Offset)}, 0.2)
+            return loading
+        end,
+        ShowErrorPage = function(_, on)
+            on = on == true
+            mainBox.Visible = not on
+            errorPage.Visible = on
+            return loading
+        end,
+        SetErrorMessage = function(_, t)
+            errorLbl.Text = tostring(t or "")
+            return loading
+        end,
+        SetErrorButtons = function(_, buttons)
+            for _, child in errorBtnRow:GetChildren() do
+                if child:IsA("TextButton") then child:Destroy() end
+            end
+            local order = 0
+            local function addButton(btn)
+                if type(btn) ~= "table" or not btn.Title then return end
+                order += 1
+                local variant = tostring(btn.Variant or "Ghost"):lower()
+                local bg = (variant == "primary" and theme.Accent)
+                    or (variant == "destructive" and theme.Error)
+                    or theme.Panel
+                local b = create("TextButton", {
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    Size = UDim2.new(0, 0, 1, 0),
+                    BackgroundColor3 = bg,
+                    BackgroundTransparency = variant == "ghost" and 0.35 or 0.1,
+                    Text = tostring(btn.Title),
+                    TextColor3 = variant == "ghost" and theme.Text or Color3.new(1, 1, 1),
+                    TextSize = 11,
+                    Font = Enum.Font.Gotham,
+                    AutoButtonColor = false,
+                    BorderSizePixel = 0,
+                    LayoutOrder = order,
+                    Parent = errorBtnRow,
+                    Children = {
+                        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+                        create("UIPadding", {
+                            PaddingLeft = UDim.new(0, 10),
+                            PaddingRight = UDim.new(0, 10),
+                        }),
+                    }
+                })
+                b.MouseButton1Click:Connect(function()
+                    safecall("LoadingErrorButton", btn.Callback or function() end)
+                end)
+            end
+            if typeof(buttons) == "table" then
+                local isArray = #buttons > 0
+                if isArray then
+                    for _, btn in buttons do addButton(btn) end
+                else
+                    for _, btn in buttons do addButton(btn) end
+                end
+            end
+            return loading
+        end,
+    }
+    function loading:Destroy()
+        if spinConn then
+            pcall(function() spinConn:Disconnect() end)
+            spinConn = nil
+        end
+        pcall(function() sidebarHost:Destroy() end)
+        pcall(function() screen:Destroy() end)
+        if ez._loading == loading then ez._loading = nil end
+        -- hand the stage back to the main window when there is one
+        local w = ez.Windows[1]
+        if w and not w._destroyed then
+            pcall(function() w:Show() end)
+        end
+    end
+    loading.Continue = loading.Destroy
+
+    ez._loading = loading
+    return loading
+end
+
+-- ~~
 -- AUTO-UPDATE CHECK (fetches latest tag from github)
 -- ~~
 function EZ:CheckForUpdate(repo)
@@ -8254,6 +8767,12 @@ function EZ:Destroy()
     -- Show()/Hide() racing the teardown used to tween destroyed frames.
     for _, w in self.Windows do
         w._destroyed = true
+    end
+    -- loading screen: destroy after the windows are marked dead so its
+    -- Destroy() cannot Show() a window mid-teardown
+    if self._loading then
+        pcall(function() self._loading:Destroy() end)
+        self._loading = nil
     end
     self._panic = false
     self._panicSnapshot = nil

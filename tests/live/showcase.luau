@@ -618,6 +618,33 @@ local function runAll()
         EZ:Notify({ Title = "ImageManager", Content = asset and ("asset: " .. tostring(asset)) or "unavailable on this executor", Duration = 4 })
     end })
 
+    -- v4.2 demos: loading screen + pop-out
+    pSec:AddButton({ Text = "Loading screen demo (4 steps)", Tooltip = "v4.2: CreateLoading with sidebar + progress",
+        Callback = function()
+            local ld = EZ:CreateLoading({ Title = "EZ Showcase", TotalSteps = 4, Description = "preparing..." })
+            task.spawn(function()
+                local steps = { "fetching data...", "building UI...", "applying configs...", "almost there..." }
+                for i, msg in steps do
+                    ld:SetCurrentStep(i)
+                    ld:SetMessage(msg)
+                    task.wait(0.7)
+                end
+                ld:SetMessage("Ready!")
+                ld:Continue()
+                EZ:Notify({ Title = "Loading", Content = "Continue() closed the loader and restored the window", Duration = 3, Type = "success" })
+            end)
+        end })
+    local popDemo = Parity:AddLeftGroupbox("Pop-out demo", "box", "undock this groupbox")
+    popDemo:AddToggle("DemoPopTgl", { Text = "toggle" })
+    popDemo:AddButton({ Text = "Pop out / dock", Callback = function()
+        popDemo:TogglePoppedOut()
+    end })
+    popDemo:AddButton({ Text = "Pop out with width + height cap", Callback = function()
+        popDemo:SetPopOutWidth(320)
+        popDemo:SetMaxPopOutHeight(260)
+        popDemo:SetPoppedOut(true, UDim2.fromOffset(420, 120))
+    end })
+
     ---------------------------------------------------------------- SELF-TEST TAB
     -- WHEN: an in-UI regression runner. Click "Run all checks" (it also runs
     -- once on load) and read the PASS/FAIL console; results also go to
@@ -860,6 +887,36 @@ local function runAll()
         task.wait(0.1)
         assert(#EZ.Windows == before, "X did not remove only its window")
         assert(EZ._destroyed == false)
+    end)
+    test("Loading screen (4.2)", function()
+        local ld = EZ:CreateLoading({ Title = "Selftest", TotalSteps = 3 })
+        assert(ld ~= nil and ld.Sidebar ~= nil, "no loader")
+        ld:SetCurrentStep(1)
+        ld:SetMessage("x")
+        ld:ShowSidebarPage(true)
+        ld.Sidebar:AddLabel("side")
+        ld:SetErrorButtons({ { Title = "OK", Variant = "Primary" } })
+        ld:ShowErrorPage(true)
+        ld:ShowErrorPage(false)
+        ld:Destroy()
+        assert(EZ._loading == nil, "loader not cleaned")
+    end)
+    test("Pop-out (4.2)", function()
+        local w = EZ.Windows[1]
+        local t = nil
+        for _, x in w.Tabs do if x.Name == "Parity" then t = x break end end
+        local gb = t.Sections[1]
+        -- use a fresh groupbox on the tab instead of the section
+        local po = nil
+        for _, s in t.Sections do
+            if s.IsPoppedOut then po = s end
+        end
+        -- sections built via AddSection also carry the methods
+        assert(po ~= nil, "no poppable section")
+        po:SetPoppedOut(true, UDim2.fromOffset(150, 150))
+        assert(po:IsPoppedOut() == true)
+        po:TogglePoppedOut()
+        assert(po:IsPoppedOut() == false)
     end)
     test("Viewport (4.1)", function()
         local w = EZ.Windows[1]
