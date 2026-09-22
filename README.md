@@ -39,6 +39,13 @@ local EZ = loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive2
 loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Example.lua"))()
 ```
 
+**Showcase** — the living documentation: nine chapters, every feature, written
+like the docs (each control's tooltip explains when to use it):
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Showcase.lua"))()
+```
+
 ## Minimal script
 
 ```lua
