@@ -44,7 +44,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "4.0.0"
+    _version = "4.1.0"
 }
 
 -- defaults
@@ -6543,6 +6543,212 @@ function EZ:CreateWindow(opts)
                 return dd
             end
 
+            -- ===
+            -- VIEWPORT (3D preview: ViewportFrame + WorldModel + orbit camera)
+            -- ===
+            function section:AddViewport(id, opts)
+                opts = opts or {}
+                local height = tonumber(opts.Height) or 180
+                local interactive = opts.Interactive ~= false
+                local autoFocus = opts.AutoFocus ~= false
+
+                local elem = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, height),
+                    BackgroundColor3 = theme.Base,
+                    BackgroundTransparency = 0.1,
+                    BorderSizePixel = 0,
+                    ClipsDescendants = true,
+                    ZIndex = 6,
+                    Parent = elemContainer
+                })
+                addCorner(elem, 6)
+                addStroke(elem, theme.Border, 1, 0.55)
+
+                local viewport = create("ViewportFrame", {
+                    Size = UDim2.fromScale(1, 1),
+                    BackgroundTransparency = 1,
+                    ImageTransparency = 1,
+                    Ambient = theme.Text,
+                    LightColor = theme.Text,
+                    ZIndex = 7,
+                    Parent = elem
+                })
+                local world = create("WorldModel", { Parent = viewport })
+                local camera = create("Camera", { Parent = viewport })
+                if typeof(opts.Camera) == "Instance" then camera = opts.Camera end
+                viewport.CurrentCamera = camera
+
+                local object
+                local orbitYaw, orbitPitch, orbitDist = 0.6, 0.35, nil
+                local center, radius = Vector3.zero, 1
+
+                local function computeBounds()
+                    if not object then return Vector3.zero, 1 end
+                    local ok, cf, size = pcall(function() return object:GetBoundingBox() end)
+                    if ok and cf and size then
+                        return cf.Position, math.max(size.Magnitude / 2, 0.5)
+                    end
+                    local pos = object.Position or Vector3.zero
+                    local sz = object.Size or Vector3.one
+                    return pos, math.max(sz.Magnitude / 2, 0.5)
+                end
+
+                local function applyCamera()
+                    center, radius = computeBounds()
+                    orbitDist = orbitDist or radius * 3.2
+                    local dir = Vector3.new(
+                        math.cos(orbitPitch) * math.sin(orbitYaw),
+                        math.sin(orbitPitch),
+                        math.cos(orbitPitch) * math.cos(orbitYaw)
+                    )
+                    pcall(function()
+                        camera.CFrame = CFrame.lookAt(center + dir * orbitDist, center)
+                    end)
+                end
+
+                local function setObject(newObj)
+                    if typeof(newObj) ~= "Instance" then return end
+                    if object then pcall(function() object:Destroy() end) end
+                    -- clone so the caller's instance stays theirs; if cloning
+                    -- fails (uncloneable), parent it directly
+                    local inst = newObj
+                    local ok, c = pcall(function() return newObj:Clone() end)
+                    if ok and c then inst = c end
+                    inst.Parent = world
+                    object = inst
+                    orbitDist = nil
+                    if autoFocus then applyCamera() end
+                end
+                if opts.Object then setObject(opts.Object) end
+
+                local dragging = false
+                trackConnection(viewport.InputBegan, function(inp)
+                    if not interactive or isElementDisabled(elem) then return end
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+                        if EZ._activeDrag and EZ._activeDrag ~= "viewport" then return end
+                        dragging = true
+                        EZ._activeDrag = "viewport"
+                    end
+                end)
+                trackConnection(UserInputService.InputChanged, function(inp)
+                    if not dragging or EZ._activeDrag ~= "viewport" then return end
+                    if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then
+                        orbitYaw -= inp.Delta.X * 0.01
+                        orbitPitch = clamp(orbitPitch + inp.Delta.Y * 0.01, -1.2, 1.2)
+                        applyCamera()
+                    elseif inp.UserInputType == Enum.UserInputType.MouseWheel then
+                        orbitDist = clamp((orbitDist or radius * 3.2) - inp.Position.Z * (radius * 0.4), radius * 1.2, radius * 12)
+                        applyCamera()
+                    end
+                end)
+                trackConnection(UserInputService.InputEnded, function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+                        if dragging then
+                            dragging = false
+                            if EZ._activeDrag == "viewport" then EZ._activeDrag = nil end
+                        end
+                    end
+                end)
+
+                local vh = {}
+                function vh:SetObject(o) setObject(o) end
+                function vh:GetObject() return object end
+                function vh:SetCamera(cam)
+                    if typeof(cam) ~= "Instance" then return end
+                    camera = cam
+                    pcall(function() viewport.CurrentCamera = cam end)
+                    applyCamera()
+                end
+                function vh:SetInteractive(v) interactive = v ~= false end
+                function vh:SetHeight(h)
+                    height = tonumber(h) or height
+                    elem.Size = UDim2.new(1, 0, 0, height)
+                end
+                function vh:Focus()
+                    orbitDist = nil
+                    applyCamera()
+                end
+                setupVisibility(vh, elem, opts)
+                setupTooltip(elem, opts)
+                tagSearch(elem, opts.Text or id)
+                finishElement(vh, elem, nil, section)
+                table.insert(section.Elements, vh)
+                -- bounds need a frame of layout before they mean anything
+                task.defer(function()
+                    if elem.Parent then applyCamera() end
+                end)
+                return vh
+            end
+
+            -- ===
+            -- UI PASSTHROUGH (embed any GuiBase2d inside the layout)
+            -- ===
+            function section:AddUIPassthrough(id, opts)
+                opts = opts or {}
+                local height = tonumber(opts.Height) or 120
+
+                local elem = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, height),
+                    BackgroundTransparency = 1,
+                    ClipsDescendants = true,
+                    ZIndex = 6,
+                    Parent = elemContainer
+                })
+
+                local instance, origParent, origSize, origPos
+                local function embed(newInst)
+                    if instance then
+                        pcall(function()
+                            if instance.Parent == elem then
+                                instance.Parent = origParent
+                                instance.Size = origSize
+                                instance.Position = origPos
+                            end
+                        end)
+                    end
+                    instance = newInst
+                    if typeof(instance) ~= "Instance" then
+                        instance = nil
+                        return
+                    end
+                    origParent = instance.Parent
+                    origSize = instance.Size
+                    origPos = instance.Position
+                    instance.Size = UDim2.fromScale(1, 1)
+                    instance.Position = UDim2.new(0, 0, 0, 0)
+                    instance.Parent = elem
+                end
+                if opts.Instance then embed(opts.Instance) end
+
+                local pass = {}
+                function pass:SetInstance(inst) embed(inst) end
+                function pass:GetInstance() return instance end
+                function pass:SetHeight(h)
+                    height = tonumber(h) or height
+                    elem.Size = UDim2.new(1, 0, 0, height)
+                end
+                setupVisibility(pass, elem, opts)
+                setupTooltip(elem, opts)
+                tagSearch(elem, opts.Text or id)
+                finishElement(pass, elem, nil, section)
+                -- Destroy hands the embedded instance back to its old parent
+                local baseDestroy = pass.Destroy
+                function pass:Destroy()
+                    if instance then
+                        pcall(function()
+                            if instance.Parent == elem then
+                                instance.Parent = origParent
+                                instance.Size = origSize
+                                instance.Position = origPos
+                            end
+                        end)
+                    end
+                    baseDestroy()
+                end
+                table.insert(section.Elements, pass)
+                return pass
+            end
+
             -- Same reason as owned() above: element builders run long after
             -- CreateWindow() returned, so each re-asserts the owner.
             local builders = {}
@@ -7760,6 +7966,128 @@ end
 
 function EZ:IsAntiAFK()
     return self._antiAFK == true
+end
+
+-- ~~
+-- PUBLIC UTILITIES (v4.1)
+-- Obsidian-parity helpers: icon application, signal tracking, safe callbacks,
+-- text measuring, colour math, and a download+cache ImageManager.
+-- ~~
+function EZ:GetIcon(ref)
+    return self:ResolveIcon(ref)
+end
+
+function EZ:ApplyLucideIcon(imageGui, ref, rotation)
+    if typeof(imageGui) ~= "Instance" then return false end
+    if not (imageGui:IsA("ImageLabel") or imageGui:IsA("ImageButton")) then return false end
+    local asset = self:ResolveIcon(ref)
+    if not asset then return false end
+    imageGui.Image = asset
+    if type(rotation) == "number" then imageGui.Rotation = rotation end
+    return true
+end
+
+-- register an existing connection for disconnect-on-EZ:Destroy
+function EZ:GiveSignal(conn)
+    if typeof(conn) ~= "RBXScriptConnection" then return conn end
+    table.insert(self._connections, conn)
+    local owner = self._connectionOwner
+    if owner and owner._connections then
+        table.insert(owner._connections, conn)
+    end
+    return conn
+end
+
+function EZ:SafeCallback(fn, ...)
+    return safecall("SafeCallback", fn, ...)
+end
+
+function EZ:GetTextBounds(text, font, size, maxWidth)
+    local TextService = game:GetService("TextService")
+    local ok, bounds = pcall(function()
+        return TextService:GetTextSize(
+            tostring(text or ""),
+            tonumber(size) or 14,
+            font or Enum.Font.Gotham,
+            Vector2.new(maxWidth or 1e6, 1e6)
+        )
+    end)
+    if ok and bounds then return bounds.X, bounds.Y end
+    return 0, 0
+end
+
+function EZ:GetBetterColor(color, amount)
+    if typeof(color) ~= "Color3" then return color end
+    local h, s, v = Color3.toHSV(color)
+    v = clamp(v + (tonumber(amount) or 0), 0, 1)
+    return Color3.fromHSV(h, s, v)
+end
+function EZ:GetLighterColor(color) return self:GetBetterColor(color, 0.08) end
+function EZ:GetDarkerColor(color) return self:GetBetterColor(color, -0.08) end
+
+-- ImageManager: download an image once, serve the cached custom asset, fall
+-- back to the provided Roblox asset id when getcustomasset/filesystem are
+-- unavailable. AddAsset(name, assetId, url?, forceRedownload?)
+EZ.ImageManager = { _cache = {}, _folder = "EZImageCache" }
+
+local function sanitizeAssetName(name)
+    return (tostring(name or ""):gsub("[^%w_%-]", "_"))
+end
+
+function EZ.ImageManager.DownloadAsset(name, forceRedownload)
+    name = sanitizeAssetName(name)
+    local meta = EZ.ImageManager._cache[name]
+    if not meta or not meta.url then return nil end
+    local path = ("%s/%s.%s"):format(EZ.ImageManager._folder, name, meta.ext or "png")
+
+    local haveFile = false
+    pcall(function() haveFile = isfile and isfile(path) == true end)
+    if haveFile and not forceRedownload then
+        local ok, asset = pcall(function() return getcustomasset(path) end)
+        if ok and asset then
+            meta.custom = asset
+            return asset
+        end
+    end
+
+    local okDl, data = pcall(function() return game:HttpGet(meta.url) end)
+    if not okDl or type(data) ~= "string" or data == "" then return nil end
+    pcall(function()
+        if makefolder and not (isfolder and isfolder(EZ.ImageManager._folder)) then
+            makefolder(EZ.ImageManager._folder)
+        end
+        writefile(path, data)
+    end)
+    local ok, asset = pcall(function() return getcustomasset(path) end)
+    if ok and asset then
+        meta.custom = asset
+        return asset
+    end
+    return nil
+end
+
+function EZ.ImageManager.AddAsset(name, assetId, url, forceRedownload)
+    name = sanitizeAssetName(name)
+    if name == "" then return nil end
+    local ext = "png"
+    if type(url) == "string" then
+        local e = url:match("%.(%w+)$")
+        if e then ext = e end
+    end
+    EZ.ImageManager._cache[name] = { id = tonumber(assetId), url = url, ext = ext }
+    if url and getcustomasset ~= nil then
+        EZ.ImageManager.DownloadAsset(name, forceRedownload)
+    end
+    return EZ.ImageManager.GetAsset(name)
+end
+
+function EZ.ImageManager.GetAsset(name)
+    name = sanitizeAssetName(name)
+    local meta = EZ.ImageManager._cache[name]
+    if not meta then return nil end
+    if meta.custom then return meta.custom end
+    if meta.id then return "rbxassetid://" .. meta.id end
+    return nil
 end
 
 -- ~~

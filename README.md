@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.0-7c5cfc" alt="version">
+  <img src="https://img.shields.io/badge/version-4.1.0-7c5cfc" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-46d17a" alt="license">
   <img src="https://img.shields.io/badge/platform-Roblox%20executors-232323?logo=roblox" alt="platform">
   <img src="https://img.shields.io/badge/mobile-supported-46d17a" alt="mobile">
@@ -69,7 +69,7 @@ That's the whole script — **the Settings tab (theme picker, config save/load, 
 | | |
 |---|---|
 | 🪟 **Windows** | Draggable + **resizable** (geometry persists, `GeometryId` for stable keys), minimize-to-**dock** (Open / Panic / Keybinds), rebindable hotkey (keys or mouse buttons), live search filter, tab badges, collapsible sidebar, mobile gestures, UI scale 0.5–2×, live corner-radius + font + notification-side controls, `CloseBehavior = "window"` for per-window X |
-| 🧩 **Elements** | Toggle (+ **description**, **checkbox variant**), Slider (+ **click-to-type**, **SetMin/SetMax/SetPrefix/SetText**), Button, Dropdown (single/multi, searchable, dictionary values, disabled entries, **Select all/Clear**, **value images**, **AddValues/SetDragSelect**, **AllowEmptySelection**), Input, Keybind (Toggle/Hold + Ctrl/Alt/Shift + M1-M3), ColorPicker (+ alpha, **palette + recents**), Label/Paragraph (**RichText**, **DoesWrap**, SetSize), Divider (**centered text + margins**), ProgressBar, Log console, PlayerSelector, **uniform handles: SetVisible/SetDisabled/Destroy/SetText on every element** |
+| 🧩 **Elements** | Toggle (+ **description**, **checkbox variant**), Slider (+ **click-to-type**, **SetMin/SetMax/SetPrefix/SetText**), Button, Dropdown (single/multi, searchable, dictionary values, disabled entries, **Select all/Clear**, **value images**, **AddValues/SetDragSelect**, **AllowEmptySelection**), Input, Keybind (Toggle/Hold + Ctrl/Alt/Shift + M1-M3), ColorPicker (+ alpha, **palette + recents**), Label/Paragraph (**RichText**, **DoesWrap**, SetSize), Divider (**centered text + margins**), ProgressBar, Log console, PlayerSelector, **Viewport (3D preview, v4.1)**, **UI Passthrough (v4.1)**, **uniform handles: SetVisible/SetDisabled/Destroy/SetText on every element** |
 | ⚙️ **Zero-config persistence** | Settings tab ships on every window (`AutoSettings = false` to opt out): Obsidian-style groupbox layout - Menu (keybind menu, cursor, always-on-top, notification side, DPI scale, corner radius, menu bind, **anti-afk**, unload), Themes (colour pickers, font face, background image, custom theme CRUD + JSON import/export), Configuration (config CRUD with confirm dialogs, **config autoload**, **per-game isolation since 3.7**) |
 | ✨ **Polish** | **Groupboxes** (symmetric two-column layout, + descriptions), **panic button** (universal kill switch + restore), tooltips, conditional visibility (`VisibleWhen`), confirm dialogs, notification history bell, **notification action buttons**, **persistent + step/progress notifications (v4.0)**, **notification sounds (v4.0)**, **two-layer custom cursor (v4.0)**, floating keybind menu (**grouped per window**), watermark tokens, error hooks |
 | 🔑 **Key system** | Optional HWID-bound gate: SHA-256 hashed keys, saved-key bypass, attempt lockout |

@@ -264,6 +264,40 @@ local function runAll()
     EZ:SetCursorEnabled(false)
     check("Cursor disabled", EZ._cursorGui == nil)
 
+    -- Viewport + passthrough + utilities (4.1)
+    local vp = s:AddViewport("T_VP", { Object = Instance.new("Part"), Height = 120 })
+    check("Viewport built", vp ~= nil and vp.Frame ~= nil and vp:GetObject() ~= nil)
+    vp:SetHeight(150)
+    check("Viewport SetHeight", vp.Frame.Size == UDim2.new(1, 0, 0, 150))
+    local srcPart = Instance.new("Part")
+    vp:SetObject(srcPart)
+    check("Viewport SetObject (cloned)", vp:GetObject() ~= nil and vp:GetObject() ~= srcPart)
+    vp:Focus()
+    vp:Destroy()
+    check("Viewport Destroy", vp.Frame.Parent == nil)
+
+    local embedded = Instance.new("Frame")
+    embedded.Parent = s.Frame
+    local pass = s:AddUIPassthrough("T_Pass", { Instance = embedded, Height = 90 })
+    check("Passthrough embeds", embedded.Parent == pass.Frame)
+    pass:Destroy()
+    check("Passthrough restores", embedded.Parent == s.Frame)
+    embedded:Destroy()
+
+    local wpx = EZ:GetTextBounds("Hello", Enum.Font.Gotham, 14)
+    check("GetTextBounds", type(wpx) == "number" and wpx > 0, tostring(wpx))
+    local conn = EZ:GiveSignal(game:GetService("RunService").Heartbeat:Connect(function() end))
+    check("GiveSignal", typeof(conn) == "RBXScriptConnection")
+    conn:Disconnect()
+    local ran = false
+    EZ:SafeCallback(function() ran = true end)
+    check("SafeCallback", ran == true)
+    check("Color helpers", typeof(EZ:GetLighterColor(EZ.Theme.Accent)) == "Color3" and typeof(EZ:GetDarkerColor(EZ.Theme.Accent)) == "Color3")
+    local img = Instance.new("ImageLabel")
+    check("ApplyLucideIcon", EZ:ApplyLucideIcon(img, "zap") == true and img.Image ~= "")
+    img:Destroy()
+    check("ImageManager fallback", EZ.ImageManager.AddAsset("probe", 12221967) == "rbxassetid://12221967")
+
     w:Destroy()
 end
 

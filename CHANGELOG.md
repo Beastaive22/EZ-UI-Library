@@ -1,5 +1,29 @@
 # Changelog
 
+## 4.1.0
+
+### Added
+- **`Section:AddViewport(id, {Object, Camera, Interactive, AutoFocus, Height})`** —
+  ViewportFrame + WorldModel 3D preview. The object is **cloned** into the
+  world (the caller's instance stays theirs); camera auto-fits via
+  `GetBoundingBox`; drag to orbit + wheel/pinch to zoom (touch included);
+  handle: `SetObject`, `GetObject`, `SetCamera`, `SetInteractive`,
+  `SetHeight`, `Focus`, `SetVisible`/`SetDisabled`/`Destroy`.
+- **`Section:AddUIPassthrough(id, {Instance, Height})`** — embeds any GuiBase2d
+  in the layout; `SetInstance` swaps, `SetHeight` resizes, `Destroy` hands the
+  instance back to its original parent with its original size/position.
+- **Public utilities** (Obsidian-parity):
+  - `EZ:GetIcon(name)` / `EZ:ApplyLucideIcon(imageGui, ref, rotation?)`
+  - `EZ:GiveSignal(conn)` — register an existing connection for
+    disconnect-on-`EZ:Destroy`
+  - `EZ:SafeCallback(fn, ...)` — error-captured invocation
+  - `EZ:GetTextBounds(text, font, size, maxWidth?)` → width, height
+  - `EZ:GetBetterColor(c, amount)` / `EZ:GetLighterColor` / `EZ:GetDarkerColor`
+  - **`EZ.ImageManager`** — `AddAsset(name, assetId, url?, forceRedownload?)`,
+    `GetAsset(name)`, `DownloadAsset(name, force?)`: downloads once via
+    `getcustomasset` into `EZImageCache/`, caches per session, falls back to
+    the Roblox asset id when the executor lacks filesystem/custom assets.
+
 ## 4.0.0
 
 ### Added

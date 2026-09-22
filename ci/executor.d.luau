@@ -8,6 +8,7 @@ declare function delfile(path: string): ()
 declare function delfolder(path: string): ()
 declare function listfiles(path: string): { string }
 declare function isfolder(path: string): boolean
+declare function getcustomasset(path: string): string
 declare function makefolder(path: string): ()
 declare function loadstring(source: string, chunkName: string?): ((...any) -> ...any)
 declare function getgenv(): { [any]: any }

@@ -240,6 +240,30 @@ for user-typed content. **v3.9**: labels take `DoesWrap = true` (multiline) and
 Preloaded with `@me` / `@random` / `@nearest` + players; auto-refreshes on
 join/leave. `dd:GetPlayers()` resolves the selection to Player instances.
 
+### AddViewport(id, {Object, Camera, Interactive, AutoFocus, Height}) -> handle  (v4.1)
+3D preview (ViewportFrame + WorldModel). `Object` is cloned into the world;
+camera auto-fits unless `AutoFocus = false`; `Interactive` (default true) adds
+drag-orbit + wheel/pinch zoom. Handle: `:SetObject(o)`, `:GetObject()`,
+`:SetCamera(cam)`, `:SetInteractive(v)`, `:SetHeight(h)`, `:Focus()` +
+uniform `SetVisible/SetDisabled/Destroy`.
+
+### AddUIPassthrough(id, {Instance, Height}) -> handle  (v4.1)
+Embeds any GuiBase2d in the layout. `:SetInstance(inst)` swaps (the previous
+instance is restored to its old parent/size/position), `:SetHeight(h)`;
+`:Destroy()` hands the embedded instance back to where it came from.
+
+### Utilities (v4.1)
+```lua
+EZ:GetIcon(name) / EZ:ApplyLucideIcon(imageGui, ref, rotation?)
+EZ:GiveSignal(conn)            -- disconnected on EZ:Destroy
+EZ:SafeCallback(fn, ...)       -- error-captured call
+EZ:GetTextBounds(text, font, size, maxWidth?) -> w, h
+EZ:GetBetterColor(c, amt) / GetLighterColor(c) / GetDarkerColor(c)
+EZ.ImageManager:AddAsset(name, assetId, url?, force?) / GetAsset(name) / DownloadAsset(name, force?)
+-- ImageManager downloads once via getcustomasset into EZImageCache/ and falls
+-- back to rbxassetid://<assetId> when the executor can't do custom assets
+```
+
 ---
 
 ## 5. Notifications

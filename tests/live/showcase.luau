@@ -586,6 +586,38 @@ local function runAll()
             end)
         end })
 
+    -- v4.1 demos: 3D viewport + UI passthrough + utilities
+    local pVP = Parity:AddRightGroupbox("3D preview", "box", "AddViewport - drag to orbit, wheel to zoom")
+    local demoPart = Instance.new("Part")
+    demoPart.Shape = Enum.PartType.Ball
+    demoPart.Material = Enum.Material.Neon
+    demoPart.Color = Color3.fromRGB(124, 92, 252)
+    pVP:AddViewport("DemoViewport", { Object = demoPart, Height = 150, Tooltip = "v4.1: ViewportFrame + WorldModel + orbit camera" })
+    local passthroughHost = Instance.new("Frame")
+    passthroughHost.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    passthroughHost.BackgroundTransparency = 0.2
+    passthroughHost.Size = UDim2.fromScale(1, 1)
+    local phLabel = Instance.new("TextLabel")
+    phLabel.Size = UDim2.fromScale(1, 1)
+    phLabel.BackgroundTransparency = 1
+    phLabel.Text = "your own GuiBase2d, embedded"
+    phLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+    phLabel.TextSize = 12
+    phLabel.Parent = passthroughHost
+    pVP:AddUIPassthrough("DemoPassthrough", { Instance = passthroughHost, Height = 56, Tooltip = "v4.1: AddUIPassthrough" })
+    pVP:AddButton({ Text = "GetTextBounds(\"Hello\")", Callback = function()
+        local wpx, hpx = EZ:GetTextBounds("Hello", Enum.Font.Gotham, 14)
+        EZ:Notify({ Title = "TextBounds", Content = ("%d x %d px"):format(wpx, hpx), Duration = 3 })
+    end })
+    pVP:AddButton({ Text = "SafeCallback a crashing fn", Callback = function()
+        local ok = EZ:SafeCallback(function() error("intentional") end)
+        EZ:Notify({ Title = "SafeCallback", Content = ok and "ran" or "error captured, UI alive", Type = ok and "info" or "warning", Duration = 3 })
+    end })
+    pVP:AddButton({ Text = "ImageManager download demo", Callback = function()
+        local asset = EZ.ImageManager.AddAsset("mspaint_logo", 95816097006870, "https://www.mspaint.cc/icon.png")
+        EZ:Notify({ Title = "ImageManager", Content = asset and ("asset: " .. tostring(asset)) or "unavailable on this executor", Duration = 4 })
+    end })
+
     ---------------------------------------------------------------- SELF-TEST TAB
     -- WHEN: an in-UI regression runner. Click "Run all checks" (it also runs
     -- once on load) and read the PASS/FAIL console; results also go to
@@ -828,6 +860,35 @@ local function runAll()
         task.wait(0.1)
         assert(#EZ.Windows == before, "X did not remove only its window")
         assert(EZ._destroyed == false)
+    end)
+    test("Viewport (4.1)", function()
+        local w = EZ.Windows[1]
+        local t = nil
+        for _, x in w.Tabs do if x.Name == "Parity" then t = x break end end
+        assert(t, "Parity tab missing")
+        local sec2 = t.Sections[1]
+        local vp = sec2:AddViewport("SelftestVP", { Object = Instance.new("Part"), Height = 100 })
+        assert(vp:GetObject() ~= nil, "no object")
+        vp:SetHeight(120)
+        assert(vp.Frame.Size == UDim2.new(1, 0, 0, 120))
+        vp:Destroy()
+        assert(vp.Frame.Parent == nil)
+    end)
+    test("Passthrough + utilities (4.1)", function()
+        local w = EZ.Windows[1]
+        local t = nil
+        for _, x in w.Tabs do if x.Name == "Parity" then t = x break end end
+        local sec = t.Sections[1]
+        local embedded = Instance.new("Frame")
+        embedded.Parent = sec.Frame
+        local pass = sec:AddUIPassthrough("SelftestPass", { Instance = embedded, Height = 40 })
+        assert(embedded.Parent == pass.Frame, "not embedded")
+        pass:Destroy()
+        assert(embedded.Parent == sec.Frame, "not restored")
+        embedded:Destroy()
+        local wpx = EZ:GetTextBounds("x", Enum.Font.Gotham, 12)
+        assert(type(wpx) == "number")
+        assert(EZ.ImageManager.AddAsset("selftest", 12221967) == "rbxassetid://12221967")
     end)
     test("Notifications v2 (4.0)", function()
         local n = EZ:Notify({ Title = "v2", Content = "persistent probe", Duration = false, TotalSteps = 4 })
