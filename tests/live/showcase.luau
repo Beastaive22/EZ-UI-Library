@@ -512,6 +512,41 @@ local function runAll()
             :format(tostring(a), tostring(b)), Duration = 4 })
     end })
 
+    ---------------------------------------------------------------- PARITY TAB
+    -- v3.9 Obsidian-parity demos: uniform handles, checkbox variant, text
+    -- dividers, value images, wrapped labels, SetDescription.
+    local Parity = Window:AddTab("Parity", "equal")
+    local pSec = Parity:AddSection("Element parity", "checkboxes, text dividers, value images, wrapped labels (3.9)")
+    pSec:AddCheckbox("DemoCheckbox", { Text = "Checkbox visual",
+        Description = "AddCheckbox - square + check (or EZ.ForceCheckbox = true)", Default = true })
+    pSec:AddDivider("Grouped values")
+    pSec:AddDropdown("DemoValueImages", {
+        Text = "Value images + AddValues",
+        Values = { sword = "Sword", shield = "Shield", potion = "Potion" },
+        ValueImages = { sword = "sword", shield = "shield", potion = "flask-round" },
+        Default = "sword",
+        Tooltip = "v3.9: SetValueImages/AddValueImages via the icon pack",
+    })
+    pSec:AddLabel({ DoesWrap = true,
+        Text = "Wrapped label: this label wraps across multiple lines because DoesWrap = true - long helper text without needing a full paragraph." })
+    pSec:AddSlider("DemoPrefix", { Text = "Price", Min = 0, Max = 1000, Default = 250,
+        Prefix = "$", Suffix = ".00", Increment = 25, Tooltip = "v3.9: SetPrefix; click the value to type" })
+    pSec:AddButton({ Text = "Handles demo", Tooltip = "SetDisabled dims + blocks input; Destroy removes the element",
+        Callback = function()
+            local tmp = pSec:AddToggle("DemoHandles", { Text = "disappears in 2s" })
+            task.delay(0.6, function() pcall(function() tmp:SetDisabled(true) end) end)
+            task.delay(2.2, function() pcall(function() tmp:Destroy() end) end)
+        end })
+    local pGB = Parity:AddLeftGroupbox("Groupbox extras", "box", "SetDescription demo")
+    pGB:AddToggle("DemoGBTgl", { Text = "toggle" })
+    pGB:AddButton({ Text = "Change groupbox description", Callback = function()
+        pGB:SetDescription("changed at " .. os.date("%H:%M:%S"))
+    end })
+    pGB:AddButton({ Text = "Hide/Show groupbox", Callback = function()
+        pGB:SetVisible(false)
+        task.delay(1, function() pcall(function() pGB:Show() end) end)
+    end })
+
     ---------------------------------------------------------------- SELF-TEST TAB
     -- WHEN: an in-UI regression runner. Click "Run all checks" (it also runs
     -- once on load) and read the PASS/FAIL console; results also go to
@@ -750,6 +785,27 @@ local function runAll()
         task.wait(0.1)
         assert(#EZ.Windows == before, "X did not remove only its window")
         assert(EZ._destroyed == false)
+    end)
+    test("Uniform handles (3.9)", function()
+        local h = EZ._elements.Demo36Slider
+        assert(h.Frame ~= nil, "no Frame on handle")
+        h:SetVisible(false)
+        assert(h.Frame.Visible == false)
+        h:SetVisible(true)
+        assert(h.Frame.Visible == true)
+        h:SetDisabled(true)
+        assert(h:IsDisabled() == true)
+        h:SetDisabled(false)
+        h:SetText("Type an exact value")
+    end)
+    test("Element Destroy (3.9)", function()
+        -- throwaway toggle on this very section; do NOT destroy a window here
+        -- (EZ.Windows[1] IS the showcase window)
+        local tmp = stSec:AddToggle("SelftestTmp", { Text = "tmp" })
+        assert(EZ._elements.SelftestTmp ~= nil)
+        tmp:Destroy()
+        assert(EZ._elements.SelftestTmp == nil, "still registered")
+        assert(tmp.Frame.Parent == nil, "frame still alive")
     end)
     test("Anti-AFK (3.8)", function()
         EZ:SetAntiAFK(true)

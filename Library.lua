@@ -44,7 +44,7 @@ local EZ = {
     _antiAFKCount = 0,
     -- most notification cards on screen at once; the holder is a fixed column
     MaxNotifications = 5,
-    _version = "3.8.0"
+    _version = "3.9.0"
 }
 
 -- defaults
@@ -416,18 +416,29 @@ local function registerElement(id, elem)
     EZ._elements[id] = elem
 end
 
+-- v3.9: element :Destroy() removes it from the registry so SaveManager, the
+-- panic snapshot and the keybind menu stop seeing a dead handle.
+local function unregisterElement(id)
+    if id ~= nil then
+        EZ._elements[id] = nil
+        EZ.Flags[id] = nil
+    end
+end
+
 local function tagSearch(frame, text)
     if not frame or not text then return end
     frame:SetAttribute("EZSearch", string.lower(text))
 end
 
--- Conditional visibility and the header search filter both want to own
--- frame.Visible. Each records its own verdict in an attribute and the frame is
--- shown only when neither wants it hidden, so clearing a search no longer
--- reveals elements whose VisibleWhen dependency is still off.
+-- Conditional visibility, the header search filter and the element's own
+-- :SetVisible() all want to own frame.Visible. Each records its own verdict in
+-- an attribute and the frame is shown only when none of them wants it hidden,
+-- so clearing a search no longer reveals elements whose VisibleWhen dependency
+-- is still off (and SetVisible doesn't fight VisibleWhen).
 local function applyElementVisibility(frame)
     frame.Visible = not frame:GetAttribute("EZCondHidden")
         and not frame:GetAttribute("EZSearchHidden")
+        and not frame:GetAttribute("EZUserHidden")
 end
 
 local function setupVisibility(elem, frame, opts)
@@ -460,6 +471,44 @@ local function setupTooltip(frame, opts)
     if EZ.AttachTooltip then
         pcall(function() EZ:AttachTooltip(frame, opts.Tooltip) end)
     end
+end
+
+-- ~~ v3.9 uniform element-handle plumbing ~~
+-- Every element handle gets .Frame, :SetVisible, :SetDisabled/:IsDisabled and
+-- :Destroy. Interaction guards read the EZDisabled attribute (builders check
+-- it in their input handlers); SetVisible composes with VisibleWhen + search
+-- through the attribute system instead of fighting them for frame.Visible.
+local function isElementDisabled(frame)
+    return frame ~= nil and frame:GetAttribute("EZDisabled") == true
+end
+
+local function finishElement(handle, frame, id, section)
+    handle.Frame = frame
+    function handle:SetVisible(v)
+        frame:SetAttribute("EZUserHidden", v == false)
+        applyElementVisibility(frame)
+        return self
+    end
+    function handle:SetDisabled(disabled)
+        frame:SetAttribute("EZDisabled", disabled == true)
+        return self
+    end
+    function handle:IsDisabled()
+        return frame:GetAttribute("EZDisabled") == true
+    end
+    function handle:Destroy()
+        if id ~= nil then unregisterElement(id) end
+        if section ~= nil then
+            for i, el in section.Elements do
+                if el == handle then
+                    table.remove(section.Elements, i)
+                    break
+                end
+            end
+        end
+        frame:Destroy()
+    end
+    return handle
 end
 
 -- cleanup old gui(s) from a previous library load. Prefer the executor UI
@@ -3431,6 +3480,7 @@ function EZ:CreateWindow(opts)
                     ZIndex = 6,
                     Parent = sectionFrame
                 })
+                section._header = sectionHeader
 
                 -- optional header icon (groupboxes pass one; Obsidian-style)
                 local headerIcon
@@ -3466,8 +3516,9 @@ function EZ:CreateWindow(opts)
                 })
 
                 -- muted description line under the title (opts2.Description)
+                local descLabel
                 if opts2.Description then
-                    create("TextLabel", {
+                    descLabel = create("TextLabel", {
                         Size = UDim2.new(1, -(labelX + 20), 0, 12),
                         Position = UDim2.new(0, labelX, 0, 30),
                         BackgroundTransparency = 1,
@@ -3481,6 +3532,43 @@ function EZ:CreateWindow(opts)
                         Parent = sectionHeader
                     })
                 end
+
+                -- v3.9: post-creation description + visibility (Obsidian parity)
+                function section:SetDescription(desc)
+                    if desc == nil then
+                        if descLabel then descLabel.Visible = false end
+                        sectionHeader.Size = UDim2.new(1, 0, 0, 30)
+                        elemContainer.Position = UDim2.new(0, 0, 0, 30)
+                        return self
+                    end
+                    if descLabel == nil then
+                        descLabel = create("TextLabel", {
+                            Size = UDim2.new(1, -(labelX + 20), 0, 12),
+                            Position = UDim2.new(0, labelX, 0, 30),
+                            BackgroundTransparency = 1,
+                            Text = tostring(desc),
+                            TextTruncate = Enum.TextTruncate.AtEnd,
+                            TextColor3 = theme.TextMuted,
+                            TextSize = 10,
+                            Font = Enum.Font.Gotham,
+                            TextXAlignment = Enum.TextXAlignment.Left,
+                            ZIndex = 7,
+                            Parent = sectionHeader
+                        })
+                        sectionHeader.Size = UDim2.new(1, 0, 0, 44)
+                        elemContainer.Position = UDim2.new(0, 0, 0, 44)
+                    else
+                        descLabel.Visible = true
+                        descLabel.Text = tostring(desc)
+                    end
+                    return self
+                end
+                function section:SetVisible(v)
+                    sectionFrame.Visible = v == true
+                    return self
+                end
+                function section:Show() return section:SetVisible(true) end
+                function section:Hide() return section:SetVisible(false) end
 
                 -- arrow (chevron icon when an icon pack is bound, "v" fallback)
                 local chevron = EZ:ResolveIcon("chevron-down")
@@ -3525,6 +3613,8 @@ function EZ:CreateWindow(opts)
                 opts = opts or {}
                 local value = opts.Default or false
                 local cb = opts.Callback or function() end
+                -- v3.9: checkbox visual variant (same handle, square + check)
+                local checkboxStyle = opts.CheckboxStyle == true or EZ.ForceCheckbox == true
 
                 local hasDesc = opts.Description ~= nil
                 local elem = create("Frame", {
@@ -3534,7 +3624,7 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
-                create("TextLabel", {
+                local label = create("TextLabel", {
                     Size = UDim2.new(1, -56, 0, hasDesc and 16 or (mobile and 38 or 32)),
                     BackgroundTransparency = 1,
                     Text = opts.Text or id,
@@ -3564,34 +3654,80 @@ function EZ:CreateWindow(opts)
                     })
                 end
 
-                -- toggle track
-                local track = create("Frame", {
-                    Size = UDim2.new(0, 40, 0, 20),
-                    Position = UDim2.new(1, -44, 0.5, -10),
-                    BackgroundColor3 = theme.Surface,
-                    BorderSizePixel = 0,
-                    ZIndex = 7,
-                    Parent = elem
-                })
-                addCorner(track, 10)
-                addStroke(track, theme.Border, 1, 0.5)
-
-                -- thumb
-                local thumb = create("Frame", {
-                    Size = UDim2.new(0, 16, 0, 16),
-                    Position = UDim2.new(0, 2, 0.5, -8),
-                    BackgroundColor3 = theme.TextDim,
-                    BorderSizePixel = 0,
-                    ZIndex = 8,
-                    Parent = track
-                })
-                addCorner(thumb, 8)
+                -- toggle visuals: pill track + thumb, or square + check mark
+                local track, thumb, checkIcon, checkText
+                if checkboxStyle then
+                    track = create("Frame", {
+                        Size = UDim2.new(0, 20, 0, 20),
+                        Position = UDim2.new(1, -30, 0.5, -10),
+                        BackgroundColor3 = theme.Surface,
+                        BorderSizePixel = 0,
+                        ZIndex = 7,
+                        Parent = elem
+                    })
+                    addCorner(track, 4)
+                    addStroke(track, theme.Border, 1, 0.5)
+                    local iconAsset = (EZ.ResolveIcon ~= nil) and EZ:ResolveIcon("check")
+                    if iconAsset then
+                        checkIcon = create("ImageLabel", {
+                            Size = UDim2.new(1, -6, 1, -6),
+                            Position = UDim2.new(0, 3, 0, 3),
+                            BackgroundTransparency = 1,
+                            Image = iconAsset,
+                            ImageColor3 = Color3.new(1, 1, 1),
+                            ScaleType = Enum.ScaleType.Fit,
+                            ImageTransparency = 1,
+                            ZIndex = 8,
+                            Parent = track
+                        })
+                    else
+                        checkText = create("TextLabel", {
+                            Size = UDim2.new(1, 0, 1, 0),
+                            BackgroundTransparency = 1,
+                            Text = "✓",
+                            TextColor3 = Color3.new(1, 1, 1),
+                            TextSize = 13,
+                            Font = Enum.Font.GothamBold,
+                            TextTransparency = 1,
+                            ZIndex = 8,
+                            Parent = track
+                        })
+                    end
+                else
+                    track = create("Frame", {
+                        Size = UDim2.new(0, 40, 0, 20),
+                        Position = UDim2.new(1, -44, 0.5, -10),
+                        BackgroundColor3 = theme.Surface,
+                        BorderSizePixel = 0,
+                        ZIndex = 7,
+                        Parent = elem
+                    })
+                    addCorner(track, 10)
+                    addStroke(track, theme.Border, 1, 0.5)
+                    thumb = create("Frame", {
+                        Size = UDim2.new(0, 16, 0, 16),
+                        Position = UDim2.new(0, 2, 0.5, -8),
+                        BackgroundColor3 = theme.TextDim,
+                        BorderSizePixel = 0,
+                        ZIndex = 8,
+                        Parent = track
+                    })
+                    addCorner(thumb, 8)
+                end
 
                 local toggle -- declared early so update() can sync .Value
                 local function update(v, silent)
                     value = v
                     if toggle then toggle.Value = v end
-                    if v then
+                    if checkboxStyle then
+                        tween(track, {BackgroundColor3 = v and theme.Accent or theme.Surface}, 0.2)
+                        if checkIcon then
+                            tween(checkIcon, {ImageTransparency = v and 0 or 1}, 0.15)
+                        end
+                        if checkText then
+                            tween(checkText, {TextTransparency = v and 0 or 1}, 0.15)
+                        end
+                    elseif v then
                         tween(thumb, {Position = UDim2.new(0, 22, 0.5, -8), BackgroundColor3 = Color3.new(1,1,1)}, 0.28, Enum.EasingStyle.Back)
                         tween(track, {BackgroundColor3 = theme.Accent}, 0.2)
                     else
@@ -3612,6 +3748,7 @@ function EZ:CreateWindow(opts)
                     Parent = elem
                 })
                 trackConnection(clickBtn.MouseButton1Click, function()
+                    if isElementDisabled(elem) then return end
                     update(not value)
                 end)
 
@@ -3620,10 +3757,16 @@ function EZ:CreateWindow(opts)
                 toggle = { Value = value, _frame = elem, _type = "Toggle" }
                 function toggle:Set(v) update(v) end
                 function toggle:Get() return value end
+                function toggle:SetText(t)
+                    label.Text = t or id
+                    tagSearch(elem, t or id)
+                    return self
+                end
                 attachOnChanged(toggle, id)
                 setupVisibility(toggle, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(toggle, elem, id, section)
 
                 registerElement(id, toggle)
                 table.insert(section.Elements, toggle)
@@ -3641,6 +3784,14 @@ function EZ:CreateWindow(opts)
                 return toggle
             end
 
+            -- v3.9: checkbox visual variant — square + check mark instead of
+            -- the pill switch. Also enabled globally with EZ.ForceCheckbox.
+            function section:AddCheckbox(id, opts)
+                opts = opts or {}
+                opts.CheckboxStyle = true
+                return section:AddToggle(id, opts)
+            end
+
             -- ===
             -- SLIDER
             -- ===
@@ -3652,6 +3803,7 @@ function EZ:CreateWindow(opts)
                 local inc = math.abs(tonumber(opts.Increment) or 1)
                 if inc == 0 then inc = 1 end
                 local suffix = opts.Suffix or ""
+                local prefix = opts.Prefix or ""
                 -- smallest decimal count that represents the increment, so a
                 -- 0.05 step shows "1.25" instead of fp noise like
                 -- "1.2500000000000002" from round(v, inc)
@@ -3762,7 +3914,7 @@ function EZ:CreateWindow(opts)
                     local pct = range > 0 and ((v - min) / range) or 0
                     fill.Size = UDim2.new(pct, 0, 1, 0)
                     sliderThumb.Position = UDim2.new(pct, -7, 0.5, -7)
-                    valLabel.Text = fmtVal(v) .. suffix
+                    valLabel.Text = prefix .. fmtVal(v) .. suffix
                     EZ.Flags[id] = v
                     fireListeners(id, v)
                     if not silent then safecall(`Slider:{id}`, cb, v) end
@@ -3776,7 +3928,7 @@ function EZ:CreateWindow(opts)
                 -- callback), unparseable input just restores the label
                 local editing = false
                 trackConnection(valLabel.MouseButton1Click, function()
-                    if editing or sliding then return end
+                    if editing or sliding or isElementDisabled(elem) then return end
                     editing = true
                     local box = create("TextBox", {
                         Name = "EZSliderEdit",
@@ -3806,7 +3958,7 @@ function EZ:CreateWindow(opts)
                         if n then
                             update(n)
                         else
-                            valLabel.Text = fmtVal(value) .. suffix
+                            valLabel.Text = prefix .. fmtVal(value) .. suffix
                         end
                     end
                     -- the opening click steals focus for a beat; arm the
@@ -3835,6 +3987,7 @@ function EZ:CreateWindow(opts)
                 })
 
                 trackConnection(clickArea.InputBegan, function(inp)
+                    if isElementDisabled(elem) then return end
                     if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
                         if EZ._activeDrag and EZ._activeDrag ~= "slider" then return end
                         sliding = true
@@ -3877,10 +4030,33 @@ function EZ:CreateWindow(opts)
                 slider = { Value = value, _type = "Slider" }
                 function slider:Set(v) update(v) end
                 function slider:Get() return value end
+                function slider:SetText(t)
+                    label.Text = t or id
+                    tagSearch(elem, t or id)
+                    return self
+                end
+                function slider:SetPrefix(p)
+                    prefix = tostring(p or "")
+                    update(value, true)
+                    return self
+                end
+                function slider:SetMin(v)
+                    min = tonumber(v) or min
+                    if max < min then min, max = max, min end
+                    update(value, true)
+                    return self
+                end
+                function slider:SetMax(v)
+                    max = tonumber(v) or max
+                    if max < min then min, max = max, min end
+                    update(value, true)
+                    return self
+                end
                 attachOnChanged(slider, id)
                 setupVisibility(slider, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(slider, elem, id, section)
 
                 registerElement(id, slider)
                 table.insert(section.Elements, slider)
@@ -3919,6 +4095,7 @@ function EZ:CreateWindow(opts)
                 })
 
                 trackConnection(btn.MouseEnter, function()
+                    if isElementDisabled(btn) then return end
                     tween(btn, {BackgroundTransparency = 0.08}, 0.15)
                     tween(btnStroke, {Color = theme.Accent, Transparency = 0.4}, 0.15)
                 end)
@@ -3927,6 +4104,7 @@ function EZ:CreateWindow(opts)
                     tween(btnStroke, {Color = theme.Border, Transparency = 0.55}, 0.15)
                 end)
                 trackConnection(btn.MouseButton1Click, function()
+                    if isElementDisabled(btn) then return end
                     -- press flash + tiny scale pulse for haptic feel
                     tween(btn, {BackgroundColor3 = theme.Accent}, 0.08)
                     task.delay(0.12, function()
@@ -3962,6 +4140,12 @@ function EZ:CreateWindow(opts)
                 -- unclickable: opts.Disabled = {["B"] = true} or {"B"}.
                 local values, displayOf, disabledOf = {}, {}, {}
                 local disabledSpec = opts.Disabled
+                -- v3.9: value images (icons per option), drag multi-select,
+                -- and empty selection for single dropdowns
+                local imageOf = {}
+                local dragSelectEnabled = false
+                local dragSelecting = false
+                local allowEmpty = opts.AllowEmptySelection == true
                 -- shared Disabled parser: map form {B = true} or array {"B"}
                 local function applyDisabled(d, into)
                     if typeof(d) ~= "table" then return end
@@ -4017,10 +4201,14 @@ function EZ:CreateWindow(opts)
                 end
 
                 local selected
-                if multi then
-                    selected = normalizeSelection(opts.Default)
-                else
-                    selected = opts.Default or (values[1] or "")
+                do
+                    local def = opts.Default
+                    if type(def) == "number" then def = values[def] end -- index form
+                    if multi then
+                        selected = normalizeSelection(def)
+                    else
+                        selected = def or (values[1] or "")
+                    end
                 end
 
                 local hasTitle = opts.Text ~= nil
@@ -4083,8 +4271,9 @@ function EZ:CreateWindow(opts)
                     Parent = header
                 })
 
+                local titleLabel
                 if hasTitle then
-                    create("TextLabel", {
+                    titleLabel = create("TextLabel", {
                         Size = UDim2.new(1, 0, 0, 14),
                         Position = UDim2.new(0, 0, 0, 0),
                         BackgroundTransparency = 1,
@@ -4284,9 +4473,24 @@ function EZ:CreateWindow(opts)
                             })
                             addCorner(item, 4)
 
+                            -- v3.9: optional per-value icon (SetValueImages)
+                            local imgAsset = imageOf[val] and EZ.ResolveIcon ~= nil and EZ:ResolveIcon(imageOf[val])
+                            if imgAsset then
+                                create("ImageLabel", {
+                                    Size = UDim2.new(0, 16, 0, 16),
+                                    Position = UDim2.new(0, 6, 0.5, -8),
+                                    BackgroundTransparency = 1,
+                                    Image = imgAsset,
+                                    ImageColor3 = theme.Text,
+                                    ScaleType = Enum.ScaleType.Fit,
+                                    ZIndex = 23,
+                                    Parent = item
+                                })
+                            end
+
                             create("TextLabel", {
-                                Size = UDim2.new(1, -10, 1, 0),
-                                Position = UDim2.new(0, 8, 0, 0),
+                                Size = UDim2.new(1, imgAsset and -34 or -10, 1, 0),
+                                Position = UDim2.new(0, imgAsset and 26 or 8, 0, 0),
                                 BackgroundTransparency = 1,
                                 Text = display,
                                 TextColor3 = isSelected and theme.Text or theme.TextDim,
@@ -4302,7 +4506,26 @@ function EZ:CreateWindow(opts)
                             -- rebuilds these rows on every open, and destroying an
                             -- item already drops its own connections. Tracking them
                             -- grew EZ._connections without bound.
+                            item.InputBegan:Connect(function(inp)
+                                -- v3.9 drag multi-select: press on a row, sweep
+                                -- across rows to select each one entered
+                                if dragSelectEnabled and multi and not isDisabled
+                                    and (inp.UserInputType == Enum.UserInputType.MouseButton1
+                                        or inp.UserInputType == Enum.UserInputType.Touch) then
+                                    dragSelecting = true
+                                end
+                            end)
                             item.MouseEnter:Connect(function()
+                                if dragSelectEnabled and dragSelecting and multi and not isDisabled and not selected[val] then
+                                    selected[val] = true
+                                    item.BackgroundColor3 = theme.Accent
+                                    item.BackgroundTransparency = 0.6
+                                    headerLabel.Text = getDisplayText()
+                                    if dropdown then dropdown.Value = selected end
+                                    EZ.Flags[id] = selected
+                                    fireListeners(id, selected)
+                                    safecall(`Dropdown:{id}`, cb, selected)
+                                end
                                 if not isDisabled then
                                     tween(item, {BackgroundTransparency = 0.5}, 0.1)
                                 end
@@ -4316,6 +4539,8 @@ function EZ:CreateWindow(opts)
                                 if isDisabled then return end
                                 if multi then
                                     selected[val] = not selected[val]
+                                elseif allowEmpty and selected == val then
+                                    selected = "" -- AllowEmptySelection: clear in place
                                 else
                                     selected = val
                                     closeDrop()
@@ -4338,6 +4563,15 @@ function EZ:CreateWindow(opts)
                         refreshItems()
                     end)
                 end
+
+                -- v3.9: end drag-select on global release (builder-level, so
+                -- the connection is tracked once instead of per rebuilt row)
+                trackConnection(UserInputService.InputEnded, function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1
+                        or inp.UserInputType == Enum.UserInputType.Touch then
+                        dragSelecting = false
+                    end
+                end)
 
                 local dropHomePos = dropFrame.Position
 
@@ -4379,6 +4613,7 @@ function EZ:CreateWindow(opts)
                 registerPopup(dropFrame, closeDrop)
 
                 trackConnection(header.MouseButton1Click, function()
+                    if isElementDisabled(elem) then return end
                     if open then
                         closeDrop()
                         return
@@ -4396,7 +4631,15 @@ function EZ:CreateWindow(opts)
                     local screen = getScreenSize()
                     local itemH = mobile and 32 or 26
                     local listW = math.max(headSz.X, 120)
-                    local h = math.min(#values * (itemH + 1) + 8 + listTop, 200)
+                    -- v3.9: VisibleItems caps the row count, Height fixes the
+                    -- list height outright
+                    local h
+                    if tonumber(opts.Height) then
+                        h = tonumber(opts.Height)
+                    else
+                        local capH = tonumber(opts.VisibleItems) and (tonumber(opts.VisibleItems) * (itemH + 1) + 8 + listTop)
+                        h = math.min(#values * (itemH + 1) + 8 + listTop, capH or 200)
+                    end
                     if searchBox then
                         searchBox.Text = ""
                         searchTerm = ""
@@ -4472,10 +4715,92 @@ function EZ:CreateWindow(opts)
                 end
                 function dropdown:Get() return selected end
 
+                -- v3.9 Obsidian-parity methods --------------------------
+                function dropdown:SetValues(newValues, newDisabled)
+                    return dropdown:Refresh(newValues, newDisabled)
+                end
+                function dropdown:AddValues(newValues)
+                    if typeof(newValues) ~= "table" then return dropdown end
+                    local have = {}
+                    for _, v in values do have[v] = true end
+                    local isDict = false
+                    for k in newValues do
+                        if type(k) == "string" then isDict = true break end
+                    end
+                    if isDict then
+                        for k, disp in newValues do
+                            if not have[k] then
+                                table.insert(values, k)
+                                have[k] = true
+                            end
+                            displayOf[k] = tostring(disp)
+                        end
+                        table.sort(values, function(a, b) return tostring(a) < tostring(b) end)
+                    else
+                        for _, v in newValues do
+                            if not have[v] then
+                                table.insert(values, v)
+                                have[v] = true
+                            end
+                        end
+                    end
+                    refreshItems()
+                    return dropdown
+                end
+                function dropdown:SetDisabledValues(d)
+                    disabledOf = {}
+                    applyDisabled(d, disabledOf)
+                    refreshItems()
+                    return dropdown
+                end
+                function dropdown:AddDisabledValues(d)
+                    applyDisabled(d, disabledOf)
+                    refreshItems()
+                    return dropdown
+                end
+                function dropdown:SetValueImages(m)
+                    imageOf = {}
+                    if typeof(m) == "table" then
+                        for k, v in m do imageOf[k] = v end
+                    end
+                    refreshItems()
+                    return dropdown
+                end
+                function dropdown:AddValueImages(m)
+                    if typeof(m) == "table" then
+                        for k, v in m do imageOf[k] = v end
+                    end
+                    refreshItems()
+                    return dropdown
+                end
+                function dropdown:SetText(t)
+                    if titleLabel then titleLabel.Text = tostring(t or "") end
+                    return dropdown
+                end
+                function dropdown:SetDragSelect(enabled)
+                    dragSelectEnabled = enabled == true
+                    return dropdown
+                end
+                function dropdown:GetActiveValues(countOnly)
+                    if multi then
+                        local n, list = 0, {}
+                        for k, v in selected do
+                            if v then
+                                n += 1
+                                list[#list + 1] = k
+                            end
+                        end
+                        return countOnly and n or list
+                    end
+                    local isSet = selected ~= nil and selected ~= ""
+                    return countOnly and (isSet and 1 or 0) or { selected }
+                end
+
                 attachOnChanged(dropdown, id)
                 setupVisibility(dropdown, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(dropdown, elem, id, section)
                 registerElement(id, dropdown)
                 table.insert(section.Elements, dropdown)
                 return dropdown
@@ -4499,8 +4824,9 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
+                local titleLabel
                 if opts.Text then
-                    create("TextLabel", {
+                    titleLabel = create("TextLabel", {
                         Size = UDim2.new(1, 0, 0, 14),
                         BackgroundTransparency = 1,
                         Text = opts.Text,
@@ -4542,6 +4868,7 @@ function EZ:CreateWindow(opts)
                 })
 
                 trackConnection(textBox.Focused, function()
+                    if isElementDisabled(elem) then return end
                     tween(inputStroke, {Color = theme.Accent, Transparency = 0}, 0.15)
                 end)
                 local input -- declared early so FocusLost can sync .Value
@@ -4573,6 +4900,17 @@ function EZ:CreateWindow(opts)
                 setupVisibility(input, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(input, elem, id, section)
+                -- disable also blocks editing, not just interaction
+                local baseSetDisabled = input.SetDisabled
+                function input:SetDisabled(d)
+                    textBox.TextEditable = d ~= true
+                    return baseSetDisabled(d)
+                end
+                function input:SetText(t)
+                    if titleLabel then titleLabel.Text = tostring(t or "") end
+                    return self
+                end
                 registerElement(id, input)
                 table.insert(section.Elements, input)
                 return input
@@ -4626,7 +4964,6 @@ function EZ:CreateWindow(opts)
                     }
                 })
 
-                local count = math.max(1, #tabNames)
                 local box = { Tabs = {}, Value = tabNames[1], _type = "TabBox" }
                 local buttons = {}
 
@@ -4643,36 +4980,88 @@ function EZ:CreateWindow(opts)
                             BackgroundTransparency = active and 0.15 or 0.6,
                         }, 0.15)
                         btn.TextColor3 = active and theme.Text or theme.TextDim
+                        -- icon-tabs keep their name in a child label
+                        for _, c in btn:GetChildren() do
+                            if c:IsA("TextLabel") then
+                                c.TextColor3 = active and theme.Text or theme.TextDim
+                            end
+                        end
                     end
                     fireListeners(id, name)
                     if not silent then safecall(`TabBox:{id}`, cb, name) end
                 end
 
-                for i, name in tabNames do
+                -- v3.9: keep segments equal-width as tabs are added later
+                local function relayout()
+                    local total = 0
+                    for _ in buttons do total += 1 end
+                    total = math.max(1, total)
+                    for _, btn in buttons do
+                        btn.Size = UDim2.new(1 / total, -(4 * (total - 1)) / total, 1, 0)
+                    end
+                end
+
+                local function addTab(name, icon)
                     name = tostring(name)
+                    if box.Tabs[name] ~= nil then return box.Tabs[name] end
+                    local idx = 0
+                    for _ in buttons do idx += 1 end
+                    idx += 1
+
                     local btn = create("TextButton", {
-                        Size = UDim2.new(1 / count, -(4 * (count - 1)) / count, 1, 0),
+                        Size = UDim2.new(1 / idx, -(4 * (idx - 1)) / idx, 1, 0),
                         BackgroundColor3 = theme.Surface,
                         BackgroundTransparency = 0.6,
-                        Text = name,
+                        Text = icon and "" or name,
                         TextColor3 = theme.TextDim,
                         TextSize = 12,
                         Font = Enum.Font.GothamMedium,
                         BorderSizePixel = 0,
                         AutoButtonColor = false,
-                        LayoutOrder = i,
+                        LayoutOrder = idx,
                         ZIndex = 8,
                         Parent = pillRow
                     })
                     addCorner(btn, 6)
+                    if icon then
+                        local asset = EZ.ResolveIcon ~= nil and EZ:ResolveIcon(icon)
+                        if asset then
+                            create("ImageLabel", {
+                                Size = UDim2.new(0, 14, 0, 14),
+                                Position = UDim2.new(0, 6, 0.5, -7),
+                                BackgroundTransparency = 1,
+                                Image = asset,
+                                ImageColor3 = theme.TextDim,
+                                ScaleType = Enum.ScaleType.Fit,
+                                ZIndex = 9,
+                                Parent = btn
+                            })
+                            create("TextLabel", {
+                                Size = UDim2.new(1, -32, 1, 0),
+                                Position = UDim2.new(0, 26, 0, 0),
+                                BackgroundTransparency = 1,
+                                Text = name,
+                                TextColor3 = theme.TextDim,
+                                TextSize = 12,
+                                Font = Enum.Font.GothamMedium,
+                                TextXAlignment = Enum.TextXAlignment.Left,
+                                TextTruncate = Enum.TextTruncate.AtEnd,
+                                ZIndex = 9,
+                                Parent = btn
+                            })
+                        else
+                            btn.Text = name
+                        end
+                    end
                     buttons[name] = btn
+                    relayout()
 
                     local container = create("Frame", {
                         Size = UDim2.new(1, 0, 0, 0),
                         BackgroundTransparency = 1,
                         AutomaticSize = Enum.AutomaticSize.Y,
                         Visible = false,
-                        LayoutOrder = i,
+                        LayoutOrder = idx,
                         ZIndex = 6,
                         Parent = stack,
                     })
@@ -4682,13 +5071,24 @@ function EZ:CreateWindow(opts)
                     box.Tabs[name] = subSec
 
                     trackConnection(btn.MouseButton1Click, function()
+                        if isElementDisabled(elem) then return end
                         select(name)
                     end)
+                    if box.Value == name then
+                        select(name, true)
+                    end
+                    return subSec
+                end
+
+                for _, name in tabNames do
+                    addTab(name)
                 end
 
                 function box:Select(name) select(tostring(name)) end
                 function box:Set(name, silent) select(tostring(name), silent) end
                 function box:Get() return box.Value end
+                -- v3.9: tabs can be added after creation (Obsidian Tabbox:AddTab)
+                function box:AddTab(name, icon) return addTab(name, icon) end
 
                 EZ.Flags[id] = box.Value
                 -- show the first tab once layout exists
@@ -4702,6 +5102,7 @@ function EZ:CreateWindow(opts)
                 setupVisibility(box, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, table.concat(tabNames, " "))
+                finishElement(box, elem, id, section)
                 registerElement(id, box)
                 table.insert(section.Elements, box)
                 return box
@@ -4807,7 +5208,7 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
-                create("TextLabel", {
+                local label = create("TextLabel", {
                     Size = UDim2.new(1, -96, 1, 0),
                     BackgroundTransparency = 1,
                     Text = opts.Text or id,
@@ -4838,6 +5239,7 @@ function EZ:CreateWindow(opts)
                 addStroke(bindBtn, theme.Border, 1, 0.6)
 
                 trackConnection(bindBtn.MouseButton1Click, function()
+                    if isElementDisabled(elem) then return end
                     listening = true
                     bindBtn.Text = "..."
                     tween(bindBtn, {BackgroundColor3 = theme.Accent}, 0.15)
@@ -4972,6 +5374,12 @@ function EZ:CreateWindow(opts)
                 setupVisibility(keybind, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(keybind, elem, id, section)
+                function keybind:SetText(t)
+                    label.Text = t or id
+                    tagSearch(elem, t or id)
+                    return self
+                end
                 registerElement(id, keybind)
                 table.insert(section.Elements, keybind)
                 return keybind
@@ -4992,7 +5400,7 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
-                create("TextLabel", {
+                local label = create("TextLabel", {
                     Size = UDim2.new(1, -44, 1, 0),
                     BackgroundTransparency = 1,
                     Text = opts.Text or id,
@@ -5507,6 +5915,7 @@ function EZ:CreateWindow(opts)
                 end
 
                 trackConnection(swatch.MouseButton1Click, function()
+                    if isElementDisabled(elem) then return end
                     if pickerOpen then
                         closePicker()
                         return
@@ -5580,6 +5989,12 @@ function EZ:CreateWindow(opts)
                 setupVisibility(picker, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(picker, elem, id, section)
+                function picker:SetText(t)
+                    label.Text = t or id
+                    tagSearch(elem, t or id)
+                    return self
+                end
                 registerElement(id, picker)
                 table.insert(section.Elements, picker)
                 return picker
@@ -5589,16 +6004,19 @@ function EZ:CreateWindow(opts)
             -- LABEL
             -- ===
             function section:AddLabel(text)
-                -- accept table form too: AddLabel({ Text = "...", Tooltip = ..., VisibleWhen = ... })
+                -- accept table form too: AddLabel({ Text = "...", Tooltip = ..., VisibleWhen = ..., DoesWrap = ..., RichText = ..., Size = 14 })
                 local opts = (type(text) == "table") and text or nil
                 if opts then text = opts.Text or opts.Title or "" end
+                local doesWrap = opts ~= nil and opts.DoesWrap == true
                 local lbl = create("TextLabel", {
-                    Size = UDim2.new(1, 0, 0, 18),
+                    Size = doesWrap and UDim2.new(1, 0, 0, 0) or UDim2.new(1, 0, 0, 18),
+                    AutomaticSize = doesWrap and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,
                     BackgroundTransparency = 1,
                     Text = tostring(text or ""),
                     RichText = opts and opts.RichText == true or false,
+                    TextWrapped = doesWrap,
                     TextColor3 = theme.TextDim,
-                    TextSize = 11,
+                    TextSize = (opts and tonumber(opts.Size)) or 11,
                     Font = Enum.Font.Gotham,
                     TextXAlignment = Enum.TextXAlignment.Left,
                     ZIndex = 7,
@@ -5614,7 +6032,14 @@ function EZ:CreateWindow(opts)
                 function label:Set(t)
                     lbl.Text = tostring(t)
                     tagSearch(lbl, tostring(t))
+                    return self
                 end
+                function label:SetText(t) return label:Set(t) end
+                function label:SetSize(size)
+                    lbl.TextSize = tonumber(size) or lbl.TextSize
+                    return self
+                end
+                finishElement(label, lbl, nil, section)
                 table.insert(section.Elements, label)
                 return label
             end
@@ -5622,15 +6047,72 @@ function EZ:CreateWindow(opts)
             -- ===
             -- DIVIDER
             -- ===
-            function section:AddDivider()
-                create("Frame", {
-                    Size = UDim2.new(1, 0, 0, 1),
-                    BackgroundColor3 = theme.Border,
-                    BackgroundTransparency = 0.5,
-                    BorderSizePixel = 0,
+            function section:AddDivider(textOrOpts)
+                -- v3.9: optional centered text + margins.
+                --   AddDivider()                    - plain hairline (as before)
+                --   AddDivider("Section")            - hairline with centered text
+                --   AddDivider({ Text = "...", MarginTop = 8, MarginBottom = 8 })
+                local opts = (type(textOrOpts) == "table") and textOrOpts or nil
+                local text = opts and opts.Text or (type(textOrOpts) == "string" and textOrOpts or nil)
+                local marginTop = (opts and tonumber(opts.MarginTop)) or (text and 4 or 0)
+                local marginBottom = (opts and tonumber(opts.MarginBottom)) or 0
+
+                local row = create("Frame", {
+                    Size = UDim2.new(1, 0, 0, marginTop + marginBottom + (text and 14 or 1)),
+                    BackgroundTransparency = 1,
                     ZIndex = 6,
                     Parent = elemContainer
                 })
+
+                if text then
+                    create("Frame", {
+                        Size = UDim2.new(0.5, -22, 0, 1),
+                        Position = UDim2.new(0, 0, 0, marginTop + 7),
+                        BackgroundColor3 = theme.Border,
+                        BackgroundTransparency = 0.5,
+                        BorderSizePixel = 0,
+                        ZIndex = 6,
+                        Parent = row
+                    })
+                    create("TextLabel", {
+                        Size = UDim2.new(0, 0, 0, 12),
+                        Position = UDim2.new(0.5, 0, 0, marginTop + 1),
+                        AnchorPoint = Vector2.new(0.5, 0),
+                        AutomaticSize = Enum.AutomaticSize.X,
+                        BackgroundTransparency = 1,
+                        Text = tostring(text),
+                        TextColor3 = theme.TextMuted,
+                        TextSize = 10,
+                        Font = Enum.Font.GothamMedium,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        ZIndex = 6,
+                        Parent = row
+                    })
+                    create("Frame", {
+                        Size = UDim2.new(0.5, -22, 0, 1),
+                        Position = UDim2.new(0.5, 22, 0, marginTop + 7),
+                        BackgroundColor3 = theme.Border,
+                        BackgroundTransparency = 0.5,
+                        BorderSizePixel = 0,
+                        ZIndex = 6,
+                        Parent = row
+                    })
+                else
+                    create("Frame", {
+                        Size = UDim2.new(1, 0, 0, 1),
+                        Position = UDim2.new(0, 0, 0, marginTop),
+                        BackgroundColor3 = theme.Border,
+                        BackgroundTransparency = 0.5,
+                        BorderSizePixel = 0,
+                        ZIndex = 6,
+                        Parent = row
+                    })
+                end
+
+                local divider = {}
+                finishElement(divider, row, nil, section)
+                table.insert(section.Elements, divider)
+                return divider
             end
 
             -- ===
@@ -5685,6 +6167,7 @@ function EZ:CreateWindow(opts)
                     bodyLbl.Text = tostring(txt)
                     tagSearch(frame, (opts.Title or "") .. " " .. tostring(txt))
                 end
+                finishElement(para, frame, nil, section)
                 table.insert(section.Elements, para)
                 return para
             end
@@ -5706,7 +6189,7 @@ function EZ:CreateWindow(opts)
                     Parent = elemContainer
                 })
 
-                create("TextLabel", {
+                local label = create("TextLabel", {
                     Size = UDim2.new(1, 0, 0, 14),
                     BackgroundTransparency = 1,
                     Text = opts.Text or id,
@@ -5781,6 +6264,12 @@ function EZ:CreateWindow(opts)
                 setupVisibility(bar, elem, opts)
                 setupTooltip(elem, opts)
                 tagSearch(elem, opts.Text or id)
+                finishElement(bar, elem, id, section)
+                function bar:SetText(t)
+                    label.Text = t or id
+                    tagSearch(elem, t or id)
+                    return self
+                end
                 registerElement(id, bar)
                 table.insert(section.Elements, bar)
                 return bar
@@ -5868,6 +6357,7 @@ function EZ:CreateWindow(opts)
                 -- Optional search tag; untagged rows stay visible inside
                 -- matched sections, so hosts can opt in via AddLog({Text=...})
                 if opts.Text then tagSearch(elem, opts.Text) end
+                finishElement(log, elem, nil, section)
                 table.insert(section.Elements, log)
                 return log
             end

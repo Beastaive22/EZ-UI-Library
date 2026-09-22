@@ -1,5 +1,38 @@
 # Changelog
 
+## 3.9.0
+
+**Uniform element handles + Obsidian-parity element upgrades.**
+
+### Added
+- **Every element handle now has**: `.Frame`, `:SetVisible(v)` (composes with
+  `VisibleWhen` + header search), `:SetDisabled(d)` / `:IsDisabled()` (dims +
+  blocks interaction), `:Destroy()` (removes from the UI **and** the config
+  registry). Addon-parity with Obsidian's per-element API.
+- **`SetText(t)`** on Toggle/Slider/Dropdown/Input/Keybind/ColorPicker/
+  ProgressBar/Label (`Set` alias kept).
+- **Checkbox visual variant**: `Section:AddCheckbox(id, opts)` (square + check
+  mark) or globally `EZ.ForceCheckbox = true`.
+- **Dividers**: centered text + `MarginTop`/`MarginBottom` —
+  `AddDivider("Grouped")` or `AddDivider({ Text = ..., MarginTop = 8 })`.
+- **Labels**: `DoesWrap = true` (multiline), `Size = 14` (text size), `SetSize`.
+- **Slider**: `SetMin`/`SetMax` (live range, re-clamps), `SetPrefix` (`Prefix`
+  option too).
+- **Dropdown**: `AddValues`, `SetValues` (alias), `SetDisabledValues`/
+  `AddDisabledValues`, `SetValueImages`/`AddValueImages` (icons per option),
+  `SetText`, `SetDragSelect` (sweep multi-select), `VisibleItems`/`Height`
+  list sizing, `AllowEmptySelection`, `GetActiveValues(countOnly?)`,
+  Default-as-index (`Default = 2`).
+- **TabBox**: `AddTab(name, icon?)` after creation with auto re-layout + icons.
+- **Groupbox/Section**: `SetDescription(desc)` (create/update/clear after
+  creation), `SetVisible`/`Show`/`Hide`.
+
+### Changed
+- Element `Destroy` unregisters the id: SaveManager, panic and the keybind
+  menu stop tracking destroyed elements; `EZ.Flags[id]` is cleared.
+- Known limitation: builder connections are window-tracked, so a destroyed
+  element's input connections release at window teardown (documented).
+
 ## 3.8.0
 
 ### Added

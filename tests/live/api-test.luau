@@ -45,11 +45,17 @@ local function runAll()
         if d.Name == "EZSliderValue" then valBtn = d break end
     end
     if valBtn then
-        firesignal(valBtn.MouseButton1Click)
-        task.wait(0.1)
         local box
-        for _, d in w.ScreenGui:GetDescendants() do
-            if d.Name == "EZSliderEdit" then box = d break end
+        for _ = 1, 3 do
+            -- firesignal can silently no-op; Connection:Fire always reaches
+            pcall(function()
+                for _, c in getconnections(valBtn.MouseButton1Click) do pcall(function() c:Fire() end) end
+            end)
+            task.wait(0.1)
+            for _, d in w.ScreenGui:GetDescendants() do
+                if d.Name == "EZSliderEdit" then box = d break end
+            end
+            if box then break end
         end
         if box then
             box.Text = "88"
@@ -145,6 +151,51 @@ local function runAll()
     else
         check("CloseBehavior window-only", false, "EZCloseBtn not found")
     end
+    -- v3.9 uniform element handles + parity catch-up
+    local tgl9 = s:AddToggle("T_Handles", { Text = "handles" })
+    tgl9:SetVisible(false)
+    check("SetVisible hides", tgl9.Frame.Visible == false)
+    tgl9:SetVisible(true)
+    check("SetVisible shows", tgl9.Frame.Visible == true)
+    tgl9:SetText("renamed toggle")
+    tgl9:SetDisabled(true)
+    check("SetDisabled attr", tgl9:IsDisabled() == true)
+    tgl9:SetDisabled(false)
+
+    local dd9 = s:AddDropdown("T_HandlesDD", { Text = "dd", Multi = true, Values = { "A", "B" } })
+    dd9:AddValues({ "C" })
+    dd9:SetDisabledValues({ C = true })
+    dd9:SetValueImages({ A = "rbxassetid://130551565616516" })
+    dd9:SetText("renamed dd")
+    check("Dropdown AddValues/SetDisabledValues", dd9 ~= nil)
+    check("GetActiveValues count", type(dd9:GetActiveValues(true)) == "number")
+    dd9:Destroy()
+    check("Element Destroy unregisters", EZ._elements["T_HandlesDD"] == nil and dd9.Frame.Parent == nil)
+
+    local cb9 = s:AddCheckbox("T_Checkbox", { Text = "checkbox visual" })
+    check("AddCheckbox variant", cb9 ~= nil and cb9.Get ~= nil)
+
+    s:AddDivider("Grouped below")
+    local tb9 = s:AddTabBox("T_HandlesTB", { Tabs = { "One" } })
+    tb9:AddTab("Two", "star")
+    tb9:Select("Two")
+    check("TabBox AddTab", tb9.Get() == "Two")
+
+    local tab9 = w:AddTab("Handles", "wrench")
+    local gb9 = tab9:AddLeftGroupbox("GB", "box", "original desc")
+    gb9:SetDescription("updated desc")
+    gb9:SetVisible(false)
+    check("Groupbox SetDescription/Hide", gb9.Frame.Visible == false)
+    gb9:Show()
+
+    local sld9 = s:AddSlider("T_Sld9", { Text = "s9", Min = 0, Max = 100, Default = 50 })
+    sld9:SetMin(10)
+    sld9:SetMax(20)
+    sld9:Set(200)
+    check("Slider SetMin/SetMax", sld9.Get() == 20, tostring(sld9.Get()))
+    sld9:SetPrefix("$")
+    sld9:SetText("Money")
+
     -- SaveManager per-game isolation (3.7)
     SM:Bind(EZ, "EZTestConfigs")
     local gameKey = tostring((game.GameId ~= 0 and game.GameId) or game.PlaceId)

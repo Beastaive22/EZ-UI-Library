@@ -98,10 +98,10 @@ EZ.Themes                 -- 8 built-in presets (Midnight, Catppuccin, ...)
 ```lua
 local Tab = Window:AddTab("Main", "sword")  -- icon: lucide name / asset ref
 
-Tab:AddSection(name) -> Section              -- full-width
-Tab:AddLeftGroupbox(name, icon?)  -> Section -- two-column layout, boxes align
-Tab:AddRightGroupbox(name, icon?) -> Section
-Tab:AddGroupbox("left" | "right", name, icon?) -> Section
+Tab:AddSection(name, description?) -> Section           -- full-width
+Tab:AddLeftGroupbox(name, icon?, description?)  -> Section -- two-column layout, boxes align
+Tab:AddRightGroupbox(name, icon?, description?) -> Section
+Tab:AddGroupbox("left" | "right", name, icon?, description?) -> Section
 Tab:AddSubTab(name) -> SubTab                -- pill row; SubTab:AddSection nests inside
 Tab._activate()                              -- programmatic switch
 ```
@@ -111,10 +111,19 @@ Tab._activate()                              -- programmatic switch
 - Full-width sections render above the groupbox columns.
 - Selected tab = filled highlight + accent indicator. Tabs auto-badge visible ON toggles.
 - Header search filters sections, groupboxes and sub-tabs.
+- **v3.9**: sections/groupboxes take an optional description, and every
+  section supports `:SetDescription(desc)` (create/update/clear after
+  creation), `:SetVisible(v)` / `:Show()` / `:Hide()`.
 
 ---
 
 ## 4. Elements
+
+**v3.9 uniform handles**: every element handle carries `.Frame` and supports
+`:SetVisible(v)` (composes with `VisibleWhen` + search), `:SetDisabled(d)` /
+`:IsDisabled()` (dims + blocks interaction), `:Destroy()` (removes from the UI
++ config registry; `EZ.Flags[id]` cleared). `:SetText(t)` exists on Toggle,
+Slider, Dropdown, Input, Keybind, ColorPicker, ProgressBar and Label.
 
 Not every element writes a flag: **Toggle, Slider, Dropdown, Input, Keybind,
 ColorPicker, Progress and TabBox** store `EZ.Flags[id]`; Button, Label,
@@ -128,10 +137,16 @@ Duplicate ids warn (last wins config save/load).
 `Set(bool)` / `Get()` / `OnChanged(fn)`. `Description` renders a muted second
 line under the label.
 
-### AddSlider(id, {Text, Min, Max, Default, Increment, Suffix, Callback}) -> handle
+### AddSlider(id, {Text, Min, Max, Default, Increment, Suffix, Prefix, Callback}) -> handle
 Clamped + snapped; decimal steps render cleanly. `Set(n)` / `Get()`.
 **Click the value label to type an exact value** — commits through the same
 clamp/snap/callback path as dragging; unparseable input restores the label.
+**v3.9**: `Prefix` option + `:SetPrefix(t)`, `:SetText(t)`,
+`:SetMin(n)` / `:SetMax(n)` (live range, value re-clamps).
+
+### AddCheckbox(id, {Text, Default, Description, Callback}) -> handle
+**v3.9**: checkbox visual variant (square + check mark) with the identical
+toggle handle. Also enabled globally via `EZ.ForceCheckbox = true`.
 
 ### AddButton({Text, Callback, Tooltip, VisibleWhen})
 
@@ -153,6 +168,13 @@ map** (`{Value = true}`) — arrays and bare scalars are normalized, but a raw
 string crashed pre-3.6. Open multi lists get a Select all / Clear row
 (disabled values excluded), and long selections collapse the header to
 `"A, B +N more"`.
+
+**v3.9 additions**: `SetValues` (alias of Refresh), `AddValues` (merge without
+wiping), `SetDisabledValues`/`AddDisabledValues`, `SetValueImages`/
+`AddValueImages` (icons per option — Lucide name / asset), `SetText`,
+`SetDragSelect(true)` (sweep-select rows), `GetActiveValues(countOnly?)`;
+options `VisibleItems` (row cap), `Height` (fixed px), `AllowEmptySelection`
+(single: clicking the selected value clears it), and `Default` as an index.
 
 ### AddInput(id, {Text, Placeholder, Default, Callback}) -> handle
 Callback `(text, enterPressed)`. `Set(text [, silent])` / `Get()`.
@@ -191,11 +213,14 @@ Closes on outside click and on page scroll. `Set(Color3)`, `Get()`,
 `Palette = {Color3, ...}` renders a preset-swatch row in the popup, and the
 last 6 deliberate picks are remembered for the session (not persisted).
 
-### AddLabel(textOrOpts) / AddDivider() / AddParagraph({Title, Content})
+### AddLabel(textOrOpts) / AddDivider(textOrOpts) / AddParagraph({Title, Content})
 Labels/paragraphs accept `{Text/Title/Content, Tooltip, VisibleWhen, RichText}`;
 handles expose `:Set(text)`. `RichText = true` opts the label into Roblox
 RichText markup (`<b>`, `<font color="#...">`, ...) — opt-in only, never set it
-for user-typed content.
+for user-typed content. **v3.9**: labels take `DoesWrap = true` (multiline) and
+`Size = 14` (text size) + `:SetSize(n)`; dividers take centered text
+(`AddDivider("Grouped")`) and `MarginTop`/`MarginBottom`, and return a handle
+(`:Destroy()`).
 
 ### AddProgressBar(id, {Text, Default, Max, Color, ShowText}) -> handle
 `Set(v)` / `Get()` / `SetMax(m)` / `SetColor(Color3)`.
