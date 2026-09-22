@@ -266,7 +266,8 @@ chR:AddButton({ Text = "Resolve with :GetPlayers()", Callback = function()
     for _, p in list do names[#names + 1] = p.Name end
     EZ:Notify({ Title = "Target", Content = #names > 0 and table.concat(names, ", ") or "none", Duration = 3 })
 end })
-local tabbox = chR:AddTabBox("Show_Mode", { Tabs = { "Legit", "Rage" } })
+local tabbox = chR:AddTabBox("Show_Mode", { Tabs = { "Legit", "Rage" },
+    Tooltip = "segmented modes with per-mode controls - the full TabBox story is in the Layout chapter" })
 tabbox.Tabs["Legit"]:AddSlider("Show_LegitFOV", { Text = "FOV", Min = 10, Max = 180, Default = 90 })
 tabbox.Tabs["Legit"]:AddToggle("Show_LegitSmooth", { Text = "Smoothing" })
 tabbox.Tabs["Rage"]:AddSlider("Show_RageFOV", { Text = "FOV", Min = 0, Max = 360, Default = 180 })
@@ -363,6 +364,23 @@ local popDemo = Layout:AddLeftGroupbox("Pop-out demo", "external-link", "undock 
 popDemo:AddToggle("Show_PopTgl", { Text = "a toggle" })
 popDemo:AddButton({ Text = "Pop out / dock", Tooltip = "v4.2: drag the grip in the header; position clamps to screen",
     Callback = function() popDemo:TogglePoppedOut() end })
+
+-- TabBox: segmented modes, each tab is a full section (structure element)
+local tbDemo = Layout:AddRightGroupbox("TabBox", "columns", "segmented modes - each tab is a full section")
+tbDemo:AddLabel({ DoesWrap = true, Text =
+    "WHEN: sub-modes inside one panel whose options need their own controls. "
+    .. "v3.9: tabs can be added at runtime, with icons." })
+local layoutBox = tbDemo:AddTabBox("Show_LayoutTB", { Tabs = { "First", "Second" } })
+layoutBox.Tabs["First"]:AddSlider("Show_LTBSld", { Text = "a control in tab 1", Min = 0, Max = 100, Default = 30 })
+layoutBox.Tabs["First"]:AddToggle("Show_LTBTgl1", { Text = "toggles too" })
+layoutBox.Tabs["Second"]:AddToggle("Show_LTBTgl2", { Text = "independent tab 2 state" })
+layoutBox.Tabs["Second"]:AddInput("Show_LTBInp", { Text = "any element works", Placeholder = "each tab is a section" })
+tbDemo:AddButton({ Text = "AddTab('Third', 'star')", Tooltip = "runtime AddTab with a lucide icon - the segments re-layout",
+    Callback = function()
+        local third = layoutBox:AddTab("Third", "star")
+        third:AddLabel("added at runtime")
+        layoutBox:Select("Third")
+    end })
 
 -- Sub-tabs nest pages inside a tab; each sub-tab holds sections
 local embeds = Layout:AddSubTab("Embeds")
