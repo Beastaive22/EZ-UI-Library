@@ -27,6 +27,7 @@ jobs:
             --definitions=globalTypes.d.luau \
             --definitions=ci/executor.d.luau \
             Library.lua \
+            loader.lua \
             addons/SaveManager.lua \
             addons/ThemeManager.lua \
             addons/QuickBar.lua \

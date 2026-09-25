@@ -21,10 +21,22 @@
 
 ## Install
 
-**Full script shell** — library + every addon + starter window + auto Settings tab:
+**Script hub** — one loadstring that works out which game you are in and runs
+that game's module. Also the central entry point for the hub:
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()
+```
+
+Supported so far: Total Conquest, Counter Type, Slam A Winner, Project 12,
+Bloxburg and Starforged — see [`games/`](games). In any other place it opens a
+small window listing what the hub carries instead of failing silently.
+
+**Full script shell** — library + every addon + starter window + auto Settings
+tab, for building your own script:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/Starter.lua"))()
 ```
 
 **Library only:**
