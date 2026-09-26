@@ -1390,14 +1390,38 @@ end
 -- points at the current objective, it moves on when that objective is done, and
 -- it shows the finish at the end of a run. Anything else here is a guess about
 -- its intent, so the arrow is always asked first.
-local function visibleArrow(folder)
-	if not folder then return nil end
-	for _, d in ipairs(folder:GetDescendants()) do
+--
+-- Arrows are not confined to the task folder — SOS carries one at its spawn and
+-- another parented to the person being escorted, and that second one is the
+-- bobbing marker that has to be walked into. So the whole map is searched, and
+-- among the visible ones the nearest is taken, which is whichever step is
+-- currently outstanding.
+local arrowCache, arrowCacheAt = {}, 0
+
+local function arrowParts(map)
+	local now = os.clock()
+	if now - arrowCacheAt < 1.5 then return arrowCache end
+	arrowCacheAt = now
+
+	local found = {}
+	for _, d in ipairs(map:GetDescendants()) do
 		if d:IsA("BasePart") and d.Name:upper():find("ARROW") and d.Transparency < 0.5 then
-			return d.Position
+			found[#found + 1] = d
 		end
 	end
-	return nil
+	arrowCache = found
+	return found
+end
+
+local function visibleArrow(map, me)
+	local best, bestDist
+	for _, part in ipairs(arrowParts(map)) do
+		if part.Parent then
+			local dist = (me - part.Position).Magnitude
+			if bestDist == nil or dist < bestDist then bestDist, best = dist, part end
+		end
+	end
+	return best and best.Position
 end
 
 -- Returns the point to walk at, and whether the run has to actually reach it.
@@ -1414,7 +1438,7 @@ local function objectivePoint(me)
 
 	local folder = taskFolder(map, info.Task)
 
-	local arrow = visibleArrow(folder)
+	local arrow = visibleArrow(map, me)
 	if arrow then return arrow, true end
 
 	if not folder then
