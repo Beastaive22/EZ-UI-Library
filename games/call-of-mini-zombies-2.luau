@@ -1291,6 +1291,35 @@ local function taskFolder(map, task)
 	return nil
 end
 
+-- Tasks where the job is to keep someone alive rather than to reach a place.
+local PROTECT_TASKS = { SOS = true, Power = true }
+
+-- The person to protect is a model named after the day's SpecialCharacter
+-- ("Hubert" on day 9), with a real Humanoid and no IsZombie marker. Following its
+-- live position is what "move with him" needs: a static waypoint cannot escort a
+-- target that walks. The standoff below then keeps the run close enough to shoot
+-- whatever is attacking him without standing inside him.
+local function vipPoint()
+	local info = dayInfo(currentDay())
+	if not info or not PROTECT_TASKS[info.Task] then return nil end
+
+	local name = info.SpecialCharacter
+	if not name or name == "None" then return nil end
+
+	local cm = Workspace:FindFirstChild("CURRENT_MAP")
+	local map = cm and cm:GetChildren()[1]
+	if not map then return nil end
+
+	local model = map:FindFirstChild(name, true)
+	if not model or model:FindFirstChild("IsZombie") then return nil end
+
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return nil end
+
+	local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart")
+	return root and root.Position
+end
+
 -- SOS and similar lay out an invisible waypoint route (SOS/Waypoints/WP*). Which
 -- end is the goal is not labelled anywhere, so the one farthest from the player
 -- is taken as the destination — and the choice is held until the player gets
@@ -1339,7 +1368,11 @@ local function objectivePoint(me)
 	if not info or not info.Task then return nil end
 
 	local folder = taskFolder(map, info.Task)
-	if not folder then return nil end
+	if not folder then return vipPoint() end
+
+	-- The live person beats any marker: he walks, the markers do not.
+	local vip = vipPoint()
+	if vip then return vip end
 
 	local arrow, touch, visible
 	for _, d in ipairs(folder:GetDescendants()) do
