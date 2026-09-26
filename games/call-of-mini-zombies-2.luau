@@ -1571,10 +1571,18 @@ local function moveThink()
 	end
 
 	-- 3. Sidestep anything flying at us, and step off anything on the floor.
+	--    A close projectile takes over the heading outright: adding it to the
+	--    objective pull leaves the run walking mostly forward into the hit, which
+	--    is why spit kept landing. Avoidance has to win while the hit is imminent.
 	local dodge = dodgePush(me, flag("MoveDodgeRadius"), desired.Magnitude > 0.001 and desired.Unit or nil)
 	if dodge.Magnitude > 0.001 then
-		desired = desired + dodge.Unit * 1.6
-		note = note and (note .. " + dodging") or "dodging"
+		if dodge.Magnitude > 0.6 then
+			desired = dodge.Unit * 3
+			note = "dodging"
+		else
+			desired = desired + dodge.Unit * 1.6
+			note = note and (note .. " + dodging") or "dodging"
+		end
 	end
 
 	local hazard = groundHazardPush(me, flag("MoveHazardRadius"))
