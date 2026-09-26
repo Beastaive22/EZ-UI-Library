@@ -1576,15 +1576,30 @@ local function moveThink()
 
 	updateStuck(objDist)
 
+	-- Stuck on something low: hop it, and drop the path so it is replanned from
+	-- where the run actually ended up. Ledges, crates and stair lips are the usual
+	-- culprits and a jump clears them without needing a new plan; replanning
+	-- afterwards stops it walking back into the same corner.
+	if stuck.cycles >= 2 and os.clock() - (nav.hopAt or 0) > 2 then
+		nav.hopAt = os.clock()
+		pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
+		pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+		nav.waypoints = nil
+	end
+
 	-- Navigation. Markers that must be stood on skip pathfinding entirely: a path
 	-- ends at its final waypoint, which is several studs shy of the goal, and the
 	-- run would stop there and look like it had arrived — measured stopping 8.7
 	-- studs short of the arrow, standing in the ring rather than on it. The last
 	-- stretch is walked straight, with no standoff, so the marker is actually
 	-- entered. Pathfinding is only for long hauls around geometry.
+	-- Pathfinding for the whole approach, markers included. Steering straight at a
+	-- target presses the run into whatever is between, which is the wall-hugging
+	-- that leaves it stuck and then cornered. Only the last few studs are walked
+	-- straight, which is still enough to step onto a marker.
 	local target
-	if not closeFully then
-		target = obj and navTarget(me, obj) or nil
+	if obj and (not closeFully or objDist > 8) then
+		target = navTarget(me, obj)
 	end
 	if target then
 		local toTarget = Vector3.new(target.X - me.X, 0, target.Z - me.Z)
