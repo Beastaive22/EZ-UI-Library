@@ -1400,6 +1400,10 @@ local function visibleArrow(folder)
 	return nil
 end
 
+-- Returns the point to walk at, and whether the run has to actually reach it.
+-- Standing ON an arrow or a pickup is what completes a step, so those must be
+-- closed to zero distance — the configured standoff is only right for the person
+-- being escorted, who you want to be near rather than inside.
 local function objectivePoint(me)
 	local cm = Workspace:FindFirstChild("CURRENT_MAP")
 	local map = cm and cm:GetChildren()[1]
@@ -1411,15 +1415,18 @@ local function objectivePoint(me)
 	local folder = taskFolder(map, info.Task)
 
 	local arrow = visibleArrow(folder)
-	if arrow then return arrow end
+	if arrow then return arrow, true end
 
-	if not folder then return vipPoint() end
+	if not folder then
+		local vip = vipPoint()
+		return vip, false
+	end
 
 	-- No arrow up: fall back to the live person on the protect tasks, then to
 	-- the interaction volume, then to an invisible waypoint route, then to any
 	-- visible part.
 	local vip = vipPoint()
-	if vip then return vip end
+	if vip then return vip, false end
 
 	local touch, visible
 	for _, d in ipairs(folder:GetDescendants()) do
@@ -1433,7 +1440,12 @@ local function objectivePoint(me)
 		end
 	end
 
-	return touch or waypointTarget(me, folder) or visible
+	if touch then return touch, true end
+
+	local wp = waypointTarget(me, folder)
+	if wp then return wp, true end
+
+	return visible, visible ~= nil
 end
 
 local function moveThink()
@@ -1461,14 +1473,14 @@ local function moveThink()
 	--    (reach the survivor), Resupply (reach the supply) and Power (reach the
 	--    survivors) playable at all. Holding a standoff rather than hugging it is
 	--    also what "stick around him" wants: close enough to defend, not on top.
-	local obj = objectivePoint(me)
+	local obj, closeFully = objectivePoint(me)
 	local toObjDir
 	local pull = 0
 	local objDist
 	if obj then
 		local toObj = obj - me
 		objDist = toObj.Magnitude
-		local standoff = flag("MoveStandoff")
+		local standoff = closeFully and 0 or flag("MoveStandoff")
 		if objDist > standoff then
 			toObjDir = toObj.Unit
 			-- Deliberately stronger than the sidestep below: a pull that only
@@ -1476,7 +1488,7 @@ local function moveThink()
 			-- closing on it.
 			pull = math.min(2.5, (objDist - standoff) / 8)
 			desired = desired + toObjDir * pull
-			note = "to objective"
+			note = closeFully and "to the marker" or "to objective"
 		end
 	end
 
