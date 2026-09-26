@@ -55,8 +55,84 @@ local G = getgenv()
 if G.ComzESP and G.ComzESP.Stop then pcall(G.ComzESP.Stop) end
 
 ----------------------------------------------------------------
+-- surviving a teleport
+----------------------------------------------------------------
+
+-- A place change destroys this script outright — verified on a live client:
+-- getgenv().ComzESP went nil on the hub -> match hop and on the match -> hub hop,
+-- because the client is rebuilt from scratch. The CO-OP survival loop teleports
+-- twice per run (START, then the result screen's OK), so without this it plays
+-- exactly one match and then disappears.
+local REARM_CODE = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()]]
+
+-- The loader always fetches the published module, which is right for anyone who
+-- started from the one-liner. ComzRearm lets a local run substitute its own code
+-- so an edited file can be tested across a teleport before it is pushed.
+local function rearmAfterTeleport()
+	local code = REARM_CODE
+	local override = G.ComzRearm
+	if type(override) == "string" and #override > 0 then code = override end
+
+	local fn
+	if type(queue_on_teleport) == "function" then
+		fn = queue_on_teleport
+	elseif type(queueonteleport) == "function" then
+		fn = queueonteleport
+	end
+	if not fn then return false end
+	return pcall(fn, code)
+end
+
+-- What the farm should be doing has to outlive the teleport too, and the EZ config
+-- is only restored if autoload happens to be set up. One small file carries it
+-- instead, so the loop works without depending on that.
+--
+-- The map and difficulty are in there for a reason: the loop uses three of them
+-- per run, and if only the on/off survived then picking Glacier and Hard would
+-- quietly go back to Warehouse on Normal after the first match.
+local INTENT_FILE = "comz-survival.txt"
+
+local function readIntent()
+	local out = { enabled = false, map = nil, difficulty = nil }
+	if type(isfile) ~= "function" or type(readfile) ~= "function" then return out end
+	local ok, exists = pcall(isfile, INTENT_FILE)
+	if not ok or not exists then return out end
+	local ok2, data = pcall(readfile, INTENT_FILE)
+	if not ok2 then return out end
+	data = tostring(data)
+
+	-- The first version of this file held a bare "0"/"1". Migrate it rather than
+	-- reading it as an empty config, which would silently switch the farm off for
+	-- anyone upgrading with it already on.
+	if not data:find("=", 1, true) then
+		out.enabled = data:find("1", 1, true) ~= nil
+		return out
+	end
+
+	for line in data:gmatch("[^\r\n]+") do
+		local key, value = line:match("^(%w+)=(.*)$")
+		if key == "enabled" then out.enabled = value == "1"
+		elseif key == "map" and value ~= "" then out.map = value
+		elseif key == "difficulty" and value ~= "" then out.difficulty = value end
+	end
+	return out
+end
+
+local function writeIntent(intent)
+	if type(writefile) ~= "function" then return end
+	pcall(writefile, INTENT_FILE, ("enabled=%s\nmap=%s\ndifficulty=%s\n"):format(
+		intent.enabled and "1" or "0", tostring(intent.map or ""), tostring(intent.difficulty or "")))
+end
+
+----------------------------------------------------------------
 -- defaults (also the fallback when the library fails to load)
 ----------------------------------------------------------------
+
+-- Read once, before the defaults, because three of them come out of it: the
+-- on/off and the map and difficulty. Switching the farm on has to survive the
+-- teleport that starting a match performs, or the loop gets one run and then
+-- loads back up switched off, on a different map.
+local SAVED_INTENT = readIntent()
 
 local DEFAULTS = {
 	EspEnabled = true,
@@ -117,6 +193,17 @@ local DEFAULTS = {
 	-- sits ~1.17 studs from the rendered head, so without this the crosshair looks
 	-- off the zombie even when it is exactly on the hitbox.
 	ShowAimPoint = true,
+	-- The game's reticle is not where the gun shoots. Measured on a live client:
+	-- Mouse.UnitRay and the game's own AimAssist ray both project to absolute
+	-- y = 482, while GunGUI.Crosshair.Center — the dot you aim with — is drawn at
+	-- absolute y = 511, i.e. 29 px lower. So the shots go to the hitbox and the
+	-- reticle below it makes that read as "it aims under the head".
+	--
+	-- On, the aim is raised by that measured angle so the reticle sits on the
+	-- target. That is only cosmetic: it moves the shots up by the same 2.45
+	-- degrees, so anything that relies on hitting will do worse. Off by default
+	-- because the camera axis is where the bullets actually go.
+	AimFollowCrosshair = false,
 	Triggerbot = false,
 	TriggerCps = 12,
 
@@ -157,6 +244,17 @@ local DEFAULTS = {
 	-- WalkSpeed in this game is a real risk rather than a formality.
 	SpeedBoostEnabled = false,
 	SpeedBoostValue = 20,
+
+	-- CO-OP survival. All three of the ones that steer the loop come out of the
+	-- saved intent, so switching it on and picking a map survives the teleport
+	-- that starting a match performs.
+	SurvivalEnabled = SAVED_INTENT.enabled,
+	SurvivalAutoStart = true,
+	SurvivalAutoFight = true,
+	SurvivalLeaveAfterWipe = true,
+	SurvivalMaxRuns = 0,
+	SurvivalMap = SAVED_INTENT.map or "Warehouse",
+	SurvivalDifficulty = SAVED_INTENT.difficulty or "Normal",
 }
 
 local EZ, Window
@@ -610,6 +708,73 @@ local function aimError(cam, targetPos)
 	return math.deg(math.acos(cos))
 end
 
+-- How far the game's own reticle sits from the camera axis, in pixels and in
+-- degrees, measured off the live GUI rather than assumed.
+--
+-- The camera axis is what matters for hitting: Mouse.UnitRay projects exactly to
+-- it, and the game's own AimAssist aims down ViewportPointToRay of the viewport
+-- centre. The reticle is drawn somewhere else, which is the whole of the "it aims
+-- below the head" report — the aim is on the hitbox, and the dot below it makes
+-- that look wrong. Remeasured every few seconds, since a weapon swap redraws it.
+local aimRef = { px = nil, deg = nil, at = 0 }
+
+local function crosshairOffset()
+	local now = os.clock()
+	if aimRef.deg and now - aimRef.at < 3 then return aimRef.deg end
+	aimRef.at = now
+
+	local cam = Workspace.CurrentCamera
+	local pg = LocalPlayer.PlayerGui
+	local gg = pg:FindFirstChild("GunGUI")
+	local cr = gg and gg:FindFirstChild("Crosshair")
+	local dot = cr and (cr:FindFirstChild("Center") or cr:FindFirstChild("Dot"))
+	if not cam or not dot or not dot.Visible then
+		aimRef.px, aimRef.deg = nil, nil
+		return nil
+	end
+
+	local ok, abs, size = pcall(function() return dot.AbsolutePosition, dot.AbsoluteSize end)
+	if not ok or typeof(abs) ~= "Vector2" then
+		aimRef.px, aimRef.deg = nil, nil
+		return nil
+	end
+
+	-- AbsolutePosition and WorldToScreenPoint are the same coordinate space, so
+	-- these are directly comparable — unlike WorldToViewportPoint, which differs
+	-- by the GUI inset.
+	local axis = cam.CFrame.Position + cam.CFrame.LookVector * 100
+	local wsp = cam:WorldToScreenPoint(axis)
+	local dy = (abs.Y + size.Y * 0.5) - wsp.Y
+
+	local halfH = cam.ViewportSize.Y * 0.5
+	if halfH < 1 then
+		aimRef.px, aimRef.deg = nil, nil
+		return nil
+	end
+
+	local halfFov = math.rad(math.clamp(cam.FieldOfView, 1, 120)) * 0.5
+	aimRef.px = dy
+	aimRef.deg = math.deg(math.atan(math.tan(halfFov) * (dy / halfH)))
+	return aimRef.deg
+end
+
+-- The same direction, raised by an angle in the vertical plane. Uses the same
+-- yaw/pitch convention as the camera: look = (-sin(yaw)cos(pitch), sin(pitch),
+-- -cos(yaw)cos(pitch)).
+local function raiseAim(camPos, targetPos, deg)
+	local delta = targetPos - camPos
+	local dist = delta.Magnitude
+	if dist < 0.05 then return targetPos end
+
+	local dir = delta / dist
+	local yaw = math.atan2(-dir.X, -dir.Z)
+	local pitch = math.clamp(math.asin(math.clamp(dir.Y, -1, 1)) + math.rad(deg), -1.5, 1.5)
+
+	local cp, sp = math.cos(pitch), math.sin(pitch)
+	local cy, sy = math.cos(yaw), math.sin(yaw)
+	return camPos + Vector3.new(-sy * cp, sp, -cy * cp) * dist
+end
+
 -- Rebuilt from absolute yaw and pitch every frame instead of composed onto the
 -- current CFrame. `cam.CFrame * CFrame.Angles(pitch, yaw, 0)` rotates the yaw
 -- about an axis the pitch has already tilted, so roll creeps in and never
@@ -810,6 +975,9 @@ local function watchAutoLeave()
 			autoLeave.last = ("leaving in %.1fs"):format(flag("AutoLeaveDelay") - elapsed)
 			return
 		end
+		-- Pressing OK leaves the place, which destroys this script. Queue the
+		-- reload first, or the loop the user switched on dies with the press.
+		rearmAfterTeleport()
 		clickButton(btn)
 		autoLeave.clicked = true
 		autoLeave.last = "pressed OK"
@@ -1049,6 +1217,217 @@ local function watchFarm()
 	farm.note = ("pressed START for DAY %s"):format(tostring(day))
 	farm.enteredLobbyAt = nil
 	clickButton(btn)
+end
+
+----------------------------------------------------------------
+-- CO-OP survival
+----------------------------------------------------------------
+
+-- From ReplicatedStorage.Shared.PartyHubConfig, which is the game's own source of
+-- truth for where each mode lives. Copying the ids here rather than requiring the
+-- module, because it is only present in some places.
+local PLACES = {
+	Lobby = 15899178400,
+	BossRaidHub = 102358977893515,
+	SurvivalHub = 98612952479093,
+	BossRaidMatch = 80561320113856,
+	SurvivalMatch = 103889213166377,
+}
+
+-- Read off the hub's own map grid (`CO-OP.StartFrame.MAIN.MAPS`), not from the
+-- config: PartyHubConfig.AllowedMaps also lists Forest, Desert, Arctic, Arena and
+-- ParkingLot, but those have no button, so asking the server for one would be
+-- asking for something the game does not offer.
+local SURVIVAL_MAPS = {
+	"Biolab", "Junkyard", "Sewers", "Church", "Warehouse", "Glacier",
+	"Snowy Top", "UndergroundBioLab", "City", "Volcanic Cave",
+	"Residential Area", "City Ruins",
+}
+
+-- PartyHubConfig.Modes.Survival.AllowedDifficulties. Hard is +30% zombie speed
+-- and 2x cash; Normal is slow zombies and weak bosses.
+local SURVIVAL_DIFFICULTIES = { "Normal", "Medium", "Hard" }
+
+local survival = {
+	state = "idle",
+	note = "",
+	runs = 0,
+	lastWave = nil,
+	createAt = nil,
+	startAt = nil,
+	endedAt = nil,
+	halted = false,
+	intent = nil,
+}
+
+-- The hub's party state, taken from the server's own replies instead of guessed
+-- from the UI. CO-OPPartyHandler listens to the same event, so this only mirrors
+-- it — the script never drives that UI, it just needs to know whether a party
+-- already exists before asking for another one.
+local partyHub = { party = nil, action = nil }
+do
+	local remote = ReplicatedStorage:FindFirstChild("PartyHubRemote")
+	if remote then
+		remote.OnClientEvent:Connect(function(action, data)
+			partyHub.action = action
+			if action == "CREATE" or action == "JOIN" or action == "UPDATE" then
+				partyHub.party = data
+			end
+		end)
+	end
+end
+
+local function hubHasParty()
+	if partyHub.party then return true end
+	-- Fallback for a reply that arrived before this script loaded.
+	local co = LocalPlayer.PlayerGui:FindFirstChild("CO-OP")
+	local pf = co and co:FindFirstChild("PartyFrame")
+	return pf ~= nil and pf.Visible
+end
+
+-- Wave number, straight off the match's own state.
+local function matchWave()
+	local mf = ReplicatedStorage:FindFirstChild("MATCH FOLDER")
+	local wave = mf and mf:FindFirstChild("WAVE")
+	if not wave then return nil end
+	local ok, value = pcall(function() return wave.Value end)
+	return ok and value or nil
+end
+
+local function inSurvivalMatch()
+	return game.PlaceId == PLACES.SurvivalMatch
+end
+
+local function setSurvivalHalted(reason)
+	survival.halted = true
+	survival.state = "halted"
+	survival.note = reason
+	if EZ then
+		EZ:Notify({ Title = "Survival stopped", Content = reason, Duration = 8, Type = "warning" })
+	end
+end
+
+-- Written only when the value changes, so this is not a file write every tick.
+local function syncIntent()
+	local now = {
+		enabled = flag("SurvivalEnabled") and true or false,
+		map = flag("SurvivalMap"),
+		difficulty = flag("SurvivalDifficulty"),
+	}
+	local was = survival.intent
+	-- Only write when something actually changed; this runs twice a second.
+	if was and was.enabled == now.enabled and was.map == now.map and was.difficulty == now.difficulty then
+		return
+	end
+	survival.intent = now
+	writeIntent(now)
+end
+
+local function watchSurvival()
+	syncIntent()
+
+	if not flag("SurvivalEnabled") then
+		survival.state, survival.note = "idle", "off"
+		return
+	end
+	if survival.halted then return end
+
+	-- In a match: play it, and notice when it ends. The fight and the movement are
+	-- driven elsewhere off the same flag; this only runs the loop.
+	if inSurvivalMatch() then
+		survival.lastWave = matchWave() or survival.lastWave
+		survival.state = "in match"
+
+		local btn = findOkButton()
+		if not btn then
+			survival.endedAt = nil
+			survival.note = ("playing, wave %s"):format(tostring(survival.lastWave))
+			return
+		end
+
+		-- The result screen is up, so the run is over. Count it once.
+		if not survival.endedAt then
+			survival.endedAt = os.clock()
+			survival.runs = survival.runs + 1
+			survival.note = ("run %d ended at wave %s"):format(survival.runs, tostring(survival.lastWave))
+
+			local cap = flag("SurvivalMaxRuns")
+			if cap and cap > 0 and survival.runs >= cap then
+				setSurvivalHalted(("stopped after %d runs"):format(survival.runs))
+				return
+			end
+		end
+
+		-- Auto leave presses this same button and re-arms for the teleport itself,
+		-- so only press here when it is switched off — otherwise the two would race
+		-- for one button and one of them would double-press it.
+		if not flag("AutoLeave") and flag("SurvivalLeaveAfterWipe") then
+			rearmAfterTeleport()
+			clickButton(btn)
+			survival.note = "clearing the result"
+		else
+			survival.note = survival.note .. " (auto leave clearing it)"
+		end
+		return
+	end
+
+	-- In the hub: make a party for the chosen map and difficulty, then start it.
+	if game.PlaceId == PLACES.SurvivalHub then
+		if not flag("SurvivalAutoStart") then
+			survival.state, survival.note = "hub", "auto-start is off"
+			return
+		end
+
+		local remote = ReplicatedStorage:FindFirstChild("PartyHubRemote")
+		if not remote then
+			survival.state, survival.note = "hub", "no PartyHubRemote in this place"
+			return
+		end
+
+		local now = os.clock()
+
+		if not hubHasParty() then
+			-- Throttled: if the server refuses, wait before asking again rather
+			-- than hammering the remote twice a second.
+			if survival.createAt and now - survival.createAt < 15 then
+				survival.state, survival.note = "hub", "waiting for the party"
+				return
+			end
+			survival.createAt = now
+			survival.state = "starting"
+
+			local map, diff = flag("SurvivalMap"), flag("SurvivalDifficulty")
+			survival.note = ("creating %s / %s"):format(tostring(map), tostring(diff))
+			-- Exactly the payload the hub's own CreateLobby sends, verified on a
+			-- live client to land in the requested map.
+			remote:FireServer("CREATE", {
+				Limit = 4,
+				Status = true,
+				Password = "",
+				Difficulty = diff,
+				Map = map,
+			})
+			return
+		end
+
+		if survival.startAt and now - survival.startAt < 12 then
+			survival.state, survival.note = "hub", "party ready"
+			return
+		end
+		survival.startAt = now
+		survival.state = "starting"
+		survival.note = "starting the match"
+		-- START teleports, so arm the reload before asking for it or this script
+		-- dies on the way into the match.
+		rearmAfterTeleport()
+		remote:FireServer("START")
+		return
+	end
+
+	-- Anywhere else — the personal lobby, a boss raid, the raid hub. Says so
+	-- rather than guessing at a launch path it has not verified.
+	survival.createAt, survival.startAt = nil, nil
+	survival.state, survival.note = "elsewhere", "not in the survival hub"
 end
 
 ----------------------------------------------------------------
@@ -1828,8 +2207,11 @@ local function objectivePoint(me)
 end
 
 local function moveThink()
-	local autoMove = flag("MoveEnabled") and flag("FarmEnabled")
-		and not farm.halted and inMission()
+	-- Either farm can drive the character; both need a live match to do it in.
+	local autoMove = flag("MoveEnabled") and inMission() and (
+		(flag("FarmEnabled") and not farm.halted)
+		or (flag("SurvivalEnabled") and not survival.halted)
+	)
 	if not autoMove then
 		if next(move.held) then releaseAll() end
 		move.note = "off"
@@ -1852,7 +2234,15 @@ local function moveThink()
 	--    (reach the survivor), Resupply (reach the supply) and Power (reach the
 	--    survivors) playable at all. Holding a standoff rather than hugging it is
 	--    also what "stick around him" wants: close enough to defend, not on top.
-	local obj, closeFully = objectivePoint(me)
+	--
+	--    Survival has no objective at all — there is nothing to reach, the whole
+	--    job is to not die — and Stats.DAY still holds the last mission's day
+	--    number in there, so objectivePoint would otherwise go looking for a
+	--    Resupply folder in a map that has none.
+	local obj, closeFully
+	if not inSurvivalMatch() then
+		obj, closeFully = objectivePoint(me)
+	end
 	local toObjDir
 	local pull = 0
 	local objDist
@@ -2222,7 +2612,10 @@ local function renderAim()
 	-- down for you, so combat needs no input at all. It also stands in for the
 	-- aimbot's own toggle — asking someone to switch on two things to get one
 	-- behaviour is a trap.
-	local autoFight = flag("FarmEnabled") and flag("FarmAutoFight") and not farm.halted and inMission()
+	local autoFight = inMission() and (
+		(flag("FarmEnabled") and flag("FarmAutoFight") and not farm.halted)
+		or (flag("SurvivalEnabled") and flag("SurvivalAutoFight") and not survival.halted)
+	)
 	local enabled = flag("AimEnabled") or autoFight
 
 	if fovCircle then
@@ -2238,7 +2631,10 @@ local function renderAim()
 		end
 	end
 
-	stats.locked, stats.aimError, stats.aimPos = nil, nil, nil
+	-- aimPart is cleared here too, not only set when a target is found: leaving it
+	-- behind made the status line report a part for a frame with no target at all.
+	stats.locked, stats.aimError, stats.aimPos, stats.aimPart = nil, nil, nil, nil
+	stats.crosshairDeg = crosshairOffset()
 	if not enabled then
 		aim.currentId, aim.turnId = nil, nil
 		if aimPoint then aimPoint.Visible = false end
@@ -2314,6 +2710,16 @@ local function renderAim()
 		stats.aimPart = part.Name
 
 		local aimPos = leadTarget(best, part, camPos)
+
+		-- Optionally raise the aim to where the game draws its reticle instead of
+		-- where the gun fires. Purely so the dot and the shots agree; it moves the
+		-- impact up by the same angle, so hit registration pays for it.
+		if flag("AimFollowCrosshair") then
+			local deg = crosshairOffset()
+			if deg and math.abs(deg) > 0.01 then
+				aimPos = raiseAim(camPos, aimPos, deg)
+			end
+		end
 		stats.aimPos = aimPos
 
 		-- While the movement is on a long haul it owns the camera, or the two
@@ -2453,6 +2859,7 @@ local autoLeaveLabel
 local farmLabel
 local moveLabel
 local speedLabel
+local survivalLabel
 local farmToggleHandle
 
 do
@@ -2688,6 +3095,19 @@ do
 			VisibleWhen = "AimEnabled",
 			Tooltip = "Skips zombies behind walls.",
 		})
+		aimBox:AddToggle("AimFollowCrosshair", {
+			Text = "Aim at the game's crosshair, not the gun",
+			Default = DEFAULTS.AimFollowCrosshair,
+			VisibleWhen = "AimEnabled",
+			Tooltip = "OFF BY DEFAULT, AND WORTH UNDERSTANDING FIRST. Your gun does not shoot where its "
+				.. "crosshair is drawn. Measured on a live client: Mouse.UnitRay and the game's own "
+				.. "AimAssist ray both project to screen y = 482, while GunGUI.Crosshair.Center, the dot "
+				.. "you aim with, is drawn at y = 511 — 29 px, or about 2.45 degrees, lower. So the shots "
+				.. "already go to the hitbox and the dot below it makes that look like it aims under the "
+				.. "head. Turning this ON raises the aim onto the dot, which is what the eye wants and "
+				.. "costs you the same 2.45 degrees of miss above the target. The green aim marker shows "
+				.. "where the shots actually go in both cases.",
+		})
 
 		local trigBox = aimTab:AddRightGroupbox("Triggerbot", "mouse-pointer-click")
 		trigBox:AddToggle("Triggerbot", {
@@ -2906,6 +3326,82 @@ do
 		})
 		speedLabel = speedBox:AddLabel("Speed: idle")
 
+		local survTab = Window:AddTab("Survival", "skull")
+		local survBox = survTab:AddLeftGroupbox("CO-OP survival", "play")
+		survBox:AddToggle("SurvivalEnabled", {
+			Text = "Farm CO-OP survival",
+			Default = DEFAULTS.SurvivalEnabled,
+			Tooltip = "Plays CO-OP survival on repeat: makes a party for the map and difficulty below, "
+				.. "starts it, fights the run, then clears the result screen and goes again. The switch "
+				.. "survives the restarts, because starting a match changes place and a place change "
+				.. "wipes the script — so it reloads itself at each hop.",
+		})
+		survBox:AddDropdown("SurvivalMap", {
+			Text = "Map",
+			Values = SURVIVAL_MAPS,
+			Default = DEFAULTS.SurvivalMap,
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "The twelve the hub actually offers. The server is asked for this map by name in "
+				.. "the party it creates, and it is honoured — verified landing in Warehouse on request.",
+		})
+		survBox:AddDropdown("SurvivalDifficulty", {
+			Text = "Difficulty",
+			Values = SURVIVAL_DIFFICULTIES,
+			Default = DEFAULTS.SurvivalDifficulty,
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "Normal: slow zombies, weak bosses. Medium: +15% zombie speed, 1.5x cash and XP. "
+				.. "Hard: +30% zombie speed, 2x cash and XP.",
+		})
+		survBox:AddToggle("SurvivalAutoStart", {
+			Text = "Start each match",
+			Default = DEFAULTS.SurvivalAutoStart,
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "Off = it will only play a match you started yourself.",
+		})
+		survBox:AddToggle("SurvivalAutoFight", {
+			Text = "Fight for me",
+			Default = DEFAULTS.SurvivalAutoFight,
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "Holds the aim key and fires while a survival run is live. Survival has no "
+				.. "objective, so this is the whole of the attack.",
+		})
+		survBox:AddToggle("SurvivalLeaveAfterWipe", {
+			Text = "Clear the result and go again",
+			Default = DEFAULTS.SurvivalLeaveAfterWipe,
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "Presses the result screen's own button, which returns you to the hub for the next "
+				.. "run. With auto leave on, that handles the press instead and this just counts the run.",
+		})
+		survBox:AddSlider("SurvivalMaxRuns", {
+			Text = "Stop after",
+			Min = 0, Max = 50, Increment = 1, Default = DEFAULTS.SurvivalMaxRuns, Suffix = " runs",
+			VisibleWhen = "SurvivalEnabled",
+			Tooltip = "0 = never stop. A run ends when the party wipes, so this is a run counter, not a "
+				.. "wave target.",
+		})
+		survivalLabel = survBox:AddLabel("Survival: idle")
+
+		local survHowBox = survTab:AddRightGroupbox("How it works", "route")
+		survHowBox:AddParagraph({
+			Title = "It talks to the hub directly",
+			Content = "It creates the party and starts it by calling the hub's own remote, with the same "
+				.. "payload the hub's UI sends — Limit 4, public, your chosen map and difficulty. No "
+				.. "button clicking in the hub.",
+		})
+		survHowBox:AddParagraph({
+			Title = "It has to reload itself",
+			Content = "Starting a match, and leaving one, both change place, and a place change destroys "
+				.. "a script completely. So it re-queues itself for the next place before every teleport "
+				.. "it causes. If the executor has no queue_on_teleport, the loop will do one run and "
+				.. "stop, and the status line will say so.",
+		})
+		survHowBox:AddParagraph({
+			Title = "Runs end by wiping",
+			Content = "CO-OP survival is endless waves — bosses every 7 — and there is no winning, only "
+				.. "how far you get. A run ends when the party goes down, and the result screen reports "
+				.. "the wave reached.",
+		})
+
 		local infoTab = Window:AddTab("Info", "info")
 		local howBox = infoTab:AddLeftGroupbox("How this reads the game", "scan-eye")
 		howBox:AddParagraph({
@@ -2996,6 +3492,8 @@ task.spawn(function()
 		if not ok3 then warn("[ComzESP] claims:", err3) end
 		local ok4, err4 = pcall(watchSpeed)
 		if not ok4 then warn("[ComzESP] speed:", err4) end
+		local ok5, err5 = pcall(watchSurvival)
+		if not ok5 then warn("[ComzESP] survival:", err5) end
 		task.wait(0.5)
 	end
 end)
@@ -3031,9 +3529,10 @@ task.spawn(function()
 				-- The aim error is in the line on purpose: it is the difference
 				-- between "it has a target" and "it is actually allowed to shoot",
 				-- and it is the number to watch when the fire gate needs tuning.
-				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s | err %s")
+				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s | err %s | reticle %s")
 					:format(stats.tracked, stats.onScreen, stats.locked or "—", stats.aimPart or "—",
-						stats.aimError and ("%.2f°"):format(stats.aimError) or "—"))
+						stats.aimError and ("%.2f°"):format(stats.aimError) or "—",
+						stats.crosshairDeg and ("%+.2f° off axis"):format(stats.crosshairDeg) or "not found"))
 			end)
 		end
 		if autoLeaveLabel then
@@ -3052,6 +3551,12 @@ task.spawn(function()
 			pcall(function()
 				speedLabel:Set(("Speed: %s | ability %s"):format(
 					speed.note, flag("AbilityAuto") and (abilityReady() and "ready" or "cooling") or "off"))
+			end)
+		end
+		if survivalLabel then
+			pcall(function()
+				survivalLabel:Set(("Survival: %s | %s | runs %d | place %d"):format(
+					survival.state, survival.note, survival.runs, game.PlaceId))
 			end)
 		end
 	end
@@ -3136,6 +3641,9 @@ G.ComzESP = {
 	Move = function() return move end,
 	Speed = function() return speed end,
 	Aim = function() return aim end,
+	Survival = function() return survival end,
+	PartyHub = function() return partyHub end,
+	Rearm = rearmAfterTeleport,
 	FarmToggle = farmToggleHandle,
 	-- Sets a flag through its element handle, so the UI and any listeners stay in
 	-- sync (writing EZ.Flags directly does neither).
