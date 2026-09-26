@@ -204,6 +204,11 @@ local DEFAULTS = {
 	-- degrees, so anything that relies on hitting will do worse. Off by default
 	-- because the camera axis is where the bullets actually go.
 	AimFollowCrosshair = false,
+	-- Extra lift applied inside the head hitbox, as a percentage of its half
+	-- height. 0 aims at the point nearest the rendered head; positive moves it up
+	-- toward the crown for anyone who wants a headshot to look like one. Only ever
+	-- moves the aim point inside the hitbox, so it cannot cost the hit.
+	AimHeightBias = 0,
 	Triggerbot = false,
 	TriggerCps = 12,
 
@@ -650,6 +655,44 @@ local function aimPartFor(e)
 	return proxyPart(e, "Head") or proxyPart(e, "Torso")
 end
 
+-- The hitbox is not where the zombie looks like it is. Measured on a live client:
+-- the proxy Head sits up to ~1.4 studs from the rendered Head, in a different
+-- direction per zombie. So a crosshair exactly on the hitbox centre can still read
+-- as being on the body, which is the report this answers.
+--
+-- Any point INSIDE a part is still a guaranteed hit — a ray to an interior point
+-- has to enter the part — so the aim can be moved toward the head you can see
+-- without ever giving up the hit. It is clamped a margin inside the faces so it
+-- cannot sit on a face and graze.
+local function aimBasePoint(part, visualHead)
+	local pos = part.Position
+	if not visualHead or not visualHead.Parent then return pos end
+
+	local half = part.Size * 0.5
+	local margin = math.min(0.2, half.X * 0.25, half.Y * 0.25, half.Z * 0.25)
+	if margin <= 0 then return pos end
+
+	local offset = part.CFrame:VectorToObjectSpace(visualHead.Position - pos)
+	local clamped = Vector3.new(
+		math.clamp(offset.X, -(half.X - margin), half.X - margin),
+		math.clamp(offset.Y, -(half.Y - margin), half.Y - margin),
+		math.clamp(offset.Z, -(half.Z - margin), half.Z - margin))
+
+	local out = pos + part.CFrame:VectorToWorldSpace(clamped)
+	-- AimHeightBias then lifts it up to half a head, for anyone who wants the
+	-- crosshair on the crown rather than the middle. Still interior, still a hit.
+	local bias = math.clamp((tonumber(flag("AimHeightBias")) or 0) / 100, -0.9, 0.9)
+	if bias ~= 0 then
+		out = out + part.CFrame.UpVector * (half.Y * bias)
+		local lift = part.CFrame:VectorToObjectSpace(out - pos)
+		out = pos + part.CFrame:VectorToWorldSpace(Vector3.new(
+			math.clamp(lift.X, -(half.X - margin), half.X - margin),
+			math.clamp(lift.Y, -(half.Y - margin), half.Y - margin),
+			math.clamp(lift.Z, -(half.Z - margin), half.Z - margin)))
+	end
+	return out
+end
+
 -- The weapon carries its own muzzle velocity (FN-2000 = 2000 studs/s), which is a
 -- far better number than any guess. AimLeadSpeed overrides it when non-zero.
 local leadSpeedCache, leadSpeedAt = nil, 0
@@ -678,10 +721,11 @@ local function leadSpeed()
 	return leadSpeedCache
 end
 
--- Where to point so the round meets a moving target: where it is now, plus
--- however far it will have travelled by the time the bullet arrives.
+-- Where to point so the round meets a moving target: the point on the hitbox
+-- nearest the head you can see, plus however far it will have travelled by the
+-- time the bullet arrives.
 local function leadTarget(e, part, camPos)
-	local pos = part.Position
+	local pos = aimBasePoint(part, e.head)
 	if not flag("AimLead") then return pos end
 
 	local speed = leadSpeed()
@@ -3107,6 +3151,17 @@ do
 				.. "head. Turning this ON raises the aim onto the dot, which is what the eye wants and "
 				.. "costs you the same 2.45 degrees of miss above the target. The green aim marker shows "
 				.. "where the shots actually go in both cases.",
+		})
+		aimBox:AddSlider("AimHeightBias", {
+			Text = "Aim height in the head",
+			Min = -50, Max = 80, Increment = 5, Default = DEFAULTS.AimHeightBias, Suffix = "%",
+			VisibleWhen = "AimEnabled",
+			Tooltip = "Where inside the head hitbox the crosshair sits. The hitbox and the zombie you can "
+				.. "see are not in the same place — measured up to 1.4 studs apart, in a different "
+				.. "direction per zombie — so the aim sits at whichever point is inside the hitbox and "
+				.. "closest to the head you can see. Nudge this up if the crosshair still reads low on the "
+				.. "zombie; it only ever moves the aim point inside the hitbox, so it cannot cost you the "
+				.. "hit.",
 		})
 
 		local trigBox = aimTab:AddRightGroupbox("Triggerbot", "mouse-pointer-click")
