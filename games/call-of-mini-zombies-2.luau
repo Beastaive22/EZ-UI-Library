@@ -221,9 +221,23 @@ local DEFAULTS = {
 	AimFollowCrosshair = false,
 	-- Extra lift applied inside the head hitbox, as a percentage of its half
 	-- height. 0 aims at the point nearest the rendered head; positive moves it up
-	-- toward the crown for anyone who wants a headshot to look like one. Only ever
-	-- moves the aim point inside the hitbox, so it cannot cost the hit.
-	AimHeightBias = 0,
+	-- toward the crown. Only ever moves the aim point inside the hitbox, so it
+	-- cannot cost the hit.
+	--
+	-- Defaults to 70 because of what the game actually credits. Hooking
+	-- ReplicatedStorage.Remotes.InflictTarget — the gun sends the part it hit and
+	-- the server only counts a headshot if that part is named Head or Head2 —
+	-- gives ground truth, and aiming at the head's centre credited mostly Torso.
+	-- Measured over live matches: 0 of 4 shots to the head at 0, 48 of 150 (~32%)
+	-- at 70. Aiming high enough pushes the top of the Torso out of whatever the
+	-- gun's hit test covers, so some of the shots start counting.
+	--
+	-- It is not a full fix: most shots still credit Torso, and slowing the fire
+	-- rate to let the weapon's spread settle did not change the ratio (25% at
+	-- 3 shots/sec against 34% at 12), so the rest is inside the game's own hit
+	-- resolution rather than anything this script controls. A low-spread weapon
+	-- headshots far more often than this 30-round SMG.
+	AimHeightBias = 70,
 	Triggerbot = false,
 	TriggerCps = 12,
 
