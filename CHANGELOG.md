@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.5.2
+
+### Fixed
+- **Low-contrast secondary text.** Eleven label sites still used `TextMuted`
+  (2.4:1 on the window base at 10–11px) where `TextDim` (5.6:1) belongs: the key
+  system subtitle, the window footer, section descriptions, the notification
+  history timestamps / clear button / empty state, and several element captions.
+  4.5.0 fixed the header subtitle only; this finishes the sweep.
+- **Long element labels no longer run under the value column.** A row label was
+  `UDim2.new(1, 0, …)` regardless of whether the row had a trailing value label,
+  so a long caption printed straight through it. The label now reserves the
+  value's 50px plus a gap, and truncates.
+
+### Hub
+- See the loader's own commit: the game list became a single `GAMES` table in
+  `loader.lua`, `tools/check-hub.sh` gates it in CI, and `levelmoba-aura.luau`
+  was renamed to `levelmoba.luau` — the slug and filename disagreed, so the
+  loader was 404ing for anyone in Starforged.
+
 ## 4.5.1
 
 ### Added
