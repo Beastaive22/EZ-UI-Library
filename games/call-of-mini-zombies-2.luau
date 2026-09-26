@@ -1257,24 +1257,46 @@ end
 
 -- Incoming projectiles: step perpendicular to their travel, to whichever side is
 -- closer to where we already want to go.
+--
+-- Travel is read from position history, not AssemblyLinearVelocity: this game
+-- moves things by setting CFrames (the zombie visuals are anchored), so a
+-- physics velocity is frequently zero — which silently ignored every spitter
+-- projectile and is why nothing was ever dodged.
+local projHistory = setmetatable({}, { __mode = "k" })
+
 local function dodgePush(me, radius, bias)
 	local folder = Workspace:FindFirstChild("ClientZombieProjectiles")
 	if not folder then return Vector3.zero end
 
+	local now = os.clock()
 	local push = Vector3.zero
+
 	for _, proj in ipairs(folder:GetChildren()) do
 		local part = proj:IsA("BasePart") and proj or proj:FindFirstChildWhichIsA("BasePart")
 		if part then
-			local toMe = me - part.Position
+			local pos = part.Position
+			local prev = projHistory[part]
+			projHistory[part] = { pos = pos, at = now }
+
+			local toMe = me - pos
 			local dist = toMe.Magnitude
-			local vel = part.AssemblyLinearVelocity
-			if dist > 0.01 and dist < radius and vel.Magnitude > 1
-				and vel.Unit:Dot(toMe.Unit) > 0.5 then
-				local side = vel.Unit:Cross(Vector3.new(0, 1, 0))
-				if side.Magnitude > 0.01 then
-					side = side.Unit
-					if bias and side:Dot(bias) < 0 then side = -side end
-					push = push + side * ((radius - dist) / radius)
+			if dist > 0.01 and dist < radius then
+				local travel
+				if prev and now - prev.at < 0.5 then
+					travel = pos - prev.pos
+				else
+					travel = part.AssemblyLinearVelocity * 0.05
+				end
+
+				-- 0.2 rather than a strict head-on test: a blob on a shallow
+				-- angle still hurts, and stepping aside early is cheap.
+				if travel.Magnitude > 0.05 and travel.Unit:Dot(toMe.Unit) > 0.2 then
+					local side = travel.Unit:Cross(Vector3.new(0, 1, 0))
+					if side.Magnitude > 0.01 then
+						side = side.Unit
+						if bias and side:Dot(bias) < 0 then side = -side end
+						push = push + side * ((radius - dist) / radius)
+					end
 				end
 			end
 		end
@@ -1364,6 +1386,20 @@ end
 --      so it is checked independently of visibility, and after the arrow.
 --   3. An invisible waypoint route (SOS).
 --   4. Any visible part, so a task with none of the above still has a goal.
+-- The game's own arrow is the authority on what to do next, in every task: it
+-- points at the current objective, it moves on when that objective is done, and
+-- it shows the finish at the end of a run. Anything else here is a guess about
+-- its intent, so the arrow is always asked first.
+local function visibleArrow(folder)
+	if not folder then return nil end
+	for _, d in ipairs(folder:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name:upper():find("ARROW") and d.Transparency < 0.5 then
+			return d.Position
+		end
+	end
+	return nil
+end
+
 local function objectivePoint(me)
 	local cm = Workspace:FindFirstChild("CURRENT_MAP")
 	local map = cm and cm:GetChildren()[1]
@@ -1373,18 +1409,21 @@ local function objectivePoint(me)
 	if not info or not info.Task then return nil end
 
 	local folder = taskFolder(map, info.Task)
+
+	local arrow = visibleArrow(folder)
+	if arrow then return arrow end
+
 	if not folder then return vipPoint() end
 
-	-- The live person beats any marker: he walks, the markers do not.
+	-- No arrow up: fall back to the live person on the protect tasks, then to
+	-- the interaction volume, then to an invisible waypoint route, then to any
+	-- visible part.
 	local vip = vipPoint()
 	if vip then return vip end
 
-	local arrow, touch, visible
+	local touch, visible
 	for _, d in ipairs(folder:GetDescendants()) do
 		if d:IsA("BasePart") then
-			if not arrow and d.Name:upper():find("ARROW") and d.Transparency < 0.5 then
-				arrow = d.Position
-			end
 			if not touch and d:FindFirstChildOfClass("TouchTransmitter") then
 				touch = d.Position
 			end
@@ -1394,7 +1433,7 @@ local function objectivePoint(me)
 		end
 	end
 
-	return arrow or touch or waypointTarget(me, folder) or visible
+	return touch or waypointTarget(me, folder) or visible
 end
 
 local function moveThink()
