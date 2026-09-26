@@ -107,6 +107,12 @@ local DEFAULTS = {
 	FarmMaxLosses = 3,
 	FarmStopOnMoveTask = true,
 	FarmClaimTasks = true,
+
+	MoveEnabled = true,
+	MoveKeepDistance = 26,
+	MoveStandoff = 10,
+	MoveFleeHealth = 35,
+	MoveDodgeRadius = 18,
 }
 
 local EZ, Window
@@ -985,6 +991,383 @@ local function watchClaims()
 end
 
 ----------------------------------------------------------------
+-- movement
+----------------------------------------------------------------
+
+-- The game moves camera-relative through its own control module, and
+-- Humanoid:Move is overwritten by it (measured: 0.03 studs in a second). So
+-- movement here is simulated WASD, which the control module does read (measured:
+-- W held moved 5.06 studs). A world direction is projected onto the camera's
+-- flattened look/right basis to pick the keys.
+--
+-- Because it is camera-relative and the aimbot owns the camera, the character
+-- can strafe and back away while still facing the target — which is how a player
+-- kites a horde.
+local move = { held = {}, note = "idle" }
+local MOVE_KEYS = { Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D }
+
+-- Walking straight at the objective walks into whatever is between, and a
+-- "rotate until it gets closer" heuristic does not fix that — it thrashes
+-- (measured: it wandered from 19 to 109 studs off). So navigation is real
+-- pathfinding: PathfindingService around the actual geometry, walked waypoint by
+-- waypoint. The rotate heuristic survives only as a fallback for when a path
+-- cannot be computed.
+local nav = { waypoints = nil, index = 1, goal = nil, at = 0, failedAt = 0 }
+
+local PathfindingService = game:GetService("PathfindingService")
+local PATH_REFRESH = 2.5
+local WAYPOINT_REACHED = 5
+
+local function recomputePath(from, to)
+	local ok, path = pcall(function()
+		local p = PathfindingService:CreatePath({
+			AgentRadius = 2.5,
+			AgentHeight = 5,
+			AgentCanJump = true,
+			WaypointSpacing = 6,
+		})
+		p:ComputeAsync(from, to)
+		return p
+	end)
+	-- A Path is a userdata, not a table — checking for a table here rejected
+	-- every successful path and silently disabled navigation.
+	if not ok or path == nil then return nil end
+
+	local okStatus, status = pcall(function() return path.Status end)
+	if not okStatus or status ~= Enum.PathStatus.Success then return nil end
+
+	local okPoints, points = pcall(function() return path:GetWaypoints() end)
+	if not okPoints or type(points) ~= "table" or #points < 2 then return nil end
+	return points
+end
+
+-- Returns the point to walk at right now, or nil if pathing is unavailable.
+local function navTarget(me, obj)
+	local now = os.clock()
+
+	local stale = nav.goal == nil
+		or (nav.goal - obj).Magnitude > 6
+		or now - nav.at > PATH_REFRESH
+		or nav.waypoints == nil
+
+	if stale and now - nav.failedAt > 1 then
+		local points = recomputePath(me, obj)
+		nav.at = now
+		if points then
+			nav.waypoints = points
+			nav.index = 2
+			nav.goal = obj
+		else
+			nav.waypoints = nil
+			nav.goal = nil
+			nav.failedAt = now
+		end
+	end
+
+	local points = nav.waypoints
+	if not points then return nil end
+
+	-- advance past anything already reached
+	while nav.index <= #points and (me - points[nav.index].Position).Magnitude < WAYPOINT_REACHED do
+		nav.index = nav.index + 1
+	end
+	if nav.index > #points then
+		nav.waypoints = nil
+		return nil
+	end
+
+	local wp = points[nav.index]
+	if wp.Action == Enum.PathWaypointAction.Jump then
+		pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
+		pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+	end
+	return wp.Position
+end
+
+local stuck = { bestDist = nil, since = 0, bias = 0, cycles = 0 }
+
+local function rotateY(v, degrees)
+	local r = math.rad(degrees)
+	local c, s = math.cos(r), math.sin(r)
+	return Vector3.new(v.X * c - v.Z * s, 0, v.X * s + v.Z * c)
+end
+
+local function updateStuck(objDist)
+	local now = os.clock()
+	if objDist == nil then
+		stuck.bestDist = nil
+		stuck.bias = 0
+		stuck.cycles = 0
+		return
+	end
+	if stuck.bestDist == nil or objDist < stuck.bestDist - 0.5 then
+		stuck.bestDist = objDist
+		stuck.since = now
+		stuck.bias = 0
+		stuck.cycles = 0
+		return
+	end
+	if now - stuck.since > 1.5 then
+		stuck.cycles = stuck.cycles + 1
+		local step = 60 * math.ceil(stuck.cycles / 2)
+		stuck.bias = (stuck.cycles % 2 == 1) and step or -step
+		stuck.since = now
+	end
+end
+
+local function holdKeys(want)
+	for _, key in ipairs(MOVE_KEYS) do
+		local should = want[key] == true
+		if (move.held[key] == true) ~= should then
+			move.held[key] = should or nil
+			pcall(function() VirtualInputManager:SendKeyEvent(should, key, false, game) end)
+		end
+	end
+end
+
+local function releaseAll()
+	if next(move.held) then holdKeys({}) end
+end
+
+local function steer(worldDir)
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+
+	local dir = Vector3.new(worldDir.X, 0, worldDir.Z)
+	if dir.Magnitude < 0.001 then
+		releaseAll()
+		return
+	end
+	dir = dir.Unit
+
+	local look = cam.CFrame.LookVector
+	local flatLook = Vector3.new(look.X, 0, look.Z)
+	if flatLook.Magnitude < 0.001 then flatLook = Vector3.new(0, 0, -1) end
+	flatLook = flatLook.Unit
+	local flatRight = flatLook:Cross(Vector3.new(0, 1, 0))
+
+	local fwd = dir:Dot(flatLook)
+	local right = dir:Dot(flatRight)
+
+	-- 0.38 is sin(22.5 deg): inside that wedge one key, outside it two, so the
+	-- eight-way result lands as close to the wanted angle as WASD can manage.
+	local want = {}
+	if fwd > 0.38 then want[Enum.KeyCode.W] = true end
+	if fwd < -0.38 then want[Enum.KeyCode.S] = true end
+	if right > 0.38 then want[Enum.KeyCode.D] = true end
+	if right < -0.38 then want[Enum.KeyCode.A] = true end
+	holdKeys(want)
+end
+
+local function myBody()
+	local ch = LocalPlayer.Character
+	if not ch then return nil end
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	local root = ch:FindFirstChild("HumanoidRootPart")
+	if hum and root and hum.Health > 0 then return hum, root end
+	return nil
+end
+
+-- Repulsion from zombies that are inside the keep-out ring.
+local function crowdPush(me, keep)
+	local push = Vector3.zero
+	for _, e in pairs(Entities) do
+		if e.alive and e.root and e.root.Parent then
+			local away = me - e.root.Position
+			local dist = away.Magnitude
+			if dist > 0.01 and dist < keep then
+				push = push + away.Unit * ((keep - dist) / keep)
+			end
+		end
+	end
+	return push
+end
+
+-- Incoming projectiles: step perpendicular to their travel, to whichever side is
+-- closer to where we already want to go.
+local function dodgePush(me, radius, bias)
+	local folder = Workspace:FindFirstChild("ClientZombieProjectiles")
+	if not folder then return Vector3.zero end
+
+	local push = Vector3.zero
+	for _, proj in ipairs(folder:GetChildren()) do
+		local part = proj:IsA("BasePart") and proj or proj:FindFirstChildWhichIsA("BasePart")
+		if part then
+			local toMe = me - part.Position
+			local dist = toMe.Magnitude
+			local vel = part.AssemblyLinearVelocity
+			if dist > 0.01 and dist < radius and vel.Magnitude > 1
+				and vel.Unit:Dot(toMe.Unit) > 0.5 then
+				local side = vel.Unit:Cross(Vector3.new(0, 1, 0))
+				if side.Magnitude > 0.01 then
+					side = side.Unit
+					if bias and side:Dot(bias) < 0 then side = -side end
+					push = push + side * ((radius - dist) / radius)
+				end
+			end
+		end
+	end
+	return push
+end
+
+-- The map carries a folder named after the day's task holding that task's
+-- waypoints — but the folder is upper-case ("RESUPPLY") while DAYS_Module's task
+-- name is not ("Resupply"), and FindFirstChild is case-sensitive, so the lookup
+-- has to ignore case.
+local function taskFolder(map, task)
+	for _, child in ipairs(map:GetChildren()) do
+		if (child:IsA("Folder") or child:IsA("Model"))
+			and child.Name:lower() == tostring(task):lower() then
+			return child
+		end
+	end
+	return nil
+end
+
+-- Priority matters: the interaction target is often an invisible trigger volume
+-- (RESUPPLY's SUPPLY_PICKUP sits at Transparency = 1), so "has a touch
+-- transmitter" is checked before, and independently of, visibility.
+local function objectivePoint()
+	local cm = Workspace:FindFirstChild("CURRENT_MAP")
+	local map = cm and cm:GetChildren()[1]
+	if not map then return nil end
+
+	local info = dayInfo(currentDay())
+	if not info or not info.Task then return nil end
+
+	local folder = taskFolder(map, info.Task)
+	if not folder then return nil end
+
+	local first
+	for _, d in ipairs(folder:GetDescendants()) do
+		if d:IsA("BasePart") then
+			if d:FindFirstChildOfClass("TouchTransmitter") then return d.Position end
+			if d.Transparency < 0.9 then first = first or d.Position end
+		end
+	end
+	return first
+end
+
+local function moveThink()
+	local autoMove = flag("MoveEnabled") and flag("FarmEnabled")
+		and not farm.halted and inMission()
+	if not autoMove then
+		if next(move.held) then releaseAll() end
+		move.note = "off"
+		return
+	end
+
+	local hum, root = myBody()
+	if not hum then
+		releaseAll()
+		move.note = "no character"
+		return
+	end
+
+	local me = root.Position
+	local keep = flag("MoveKeepDistance")
+	local desired = Vector3.zero
+	local note = nil
+
+	-- 1. Head for the objective while there is one — this is what makes SOS
+	--    (reach the survivor), Resupply (reach the supply) and Power (reach the
+	--    survivors) playable at all. Holding a standoff rather than hugging it is
+	--    also what "stick around him" wants: close enough to defend, not on top.
+	local obj = objectivePoint()
+	local toObjDir
+	local pull = 0
+	local objDist
+	if obj then
+		local toObj = obj - me
+		objDist = toObj.Magnitude
+		local standoff = flag("MoveStandoff")
+		if objDist > standoff then
+			toObjDir = toObj.Unit
+			-- Deliberately stronger than the sidestep below: a pull that only
+			-- just exceeds it makes the run orbit the objective instead of
+			-- closing on it.
+			pull = math.min(2.5, (objDist - standoff) / 8)
+			desired = desired + toObjDir * pull
+			note = "to objective"
+		end
+	end
+
+	-- 2. Stay off the horde — but only sideways, and never so hard that it
+	--    cancels the approach. A push that opposes the objective would simply
+	--    cancel it and leave the run hovering at a distance; walking around a
+	--    horde is what a player does, refusing to walk past it is not.
+	local push = crowdPush(me, keep)
+	if push.Magnitude > 0.001 then
+		if toObjDir then
+			local along = push:Dot(toObjDir)
+			if along < 0 then push = push - toObjDir * along end
+		end
+		local strength = math.min(1.2, push.Magnitude)
+		if pull > 0 then strength = math.min(strength, pull * 0.8) end
+		if strength > 0.001 then
+			desired = desired + push.Unit * strength
+			note = note and (note .. " + sidestep") or "sidestep"
+		end
+	end
+
+	-- 3. Sidestep anything flying at us.
+	local dodge = dodgePush(me, flag("MoveDodgeRadius"), desired.Magnitude > 0.001 and desired.Unit or nil)
+	if dodge.Magnitude > 0.001 then
+		desired = desired + dodge.Unit * 1.6
+		note = note and (note .. " + dodging") or "dodging"
+	end
+
+	-- 4. Hurt badly: the objective can wait, put distance on first.
+	if hum.Health / math.max(hum.MaxHealth, 1) * 100 < flag("MoveFleeHealth") then
+		local flee = crowdPush(me, keep * 3)
+		if flee.Magnitude > 0.001 then
+			desired = desired + flee.Unit * 2
+			note = "fleeing"
+		end
+	end
+
+	if desired.Magnitude < 0.001 then
+		releaseAll()
+		move.travelling = false
+		move.note = obj and "holding position" or "nothing to do"
+		return
+	end
+
+	updateStuck(objDist)
+
+	-- Navigation. While a path waypoint is still a way off, the camera is aimed
+	-- along the path and W is held, which makes the walk straight. Once the last
+	-- leg is short the camera goes back to the aimbot and the steering below takes
+	-- over, so the run can shoot while it closes the final few studs.
+	local target = obj and navTarget(me, obj) or nil
+	if target then
+		local toTarget = Vector3.new(target.X - me.X, 0, target.Z - me.Z)
+		if toTarget.Magnitude > 15 then
+			local cam = Workspace.CurrentCamera
+			if cam then aimCameraAt(cam, me + toTarget.Unit * 10, 0.3) end
+			holdKeys({ [Enum.KeyCode.W] = true })
+			move.travelling = true
+			move.note = ("pathing (%d/%d)"):format(nav.index, #nav.waypoints)
+			return
+		end
+		-- final leg: steer at the waypoint instead of the objective itself
+		desired = toTarget.Magnitude > 0.01 and toTarget.Unit * 1.5 or desired
+		note = "final leg"
+	end
+	move.travelling = false
+
+	-- The rotate heuristic is a fallback only. Applying it while a path exists
+	-- just fights the path and walks the run away from the objective.
+	if stuck.bias ~= 0 and not target then
+		desired = rotateY(desired, stuck.bias)
+		note = (note and (note .. " + ") or "") .. "detouring"
+	end
+
+	steer(desired)
+	move.note = note or "moving"
+end
+
+----------------------------------------------------------------
 -- per-frame work
 ----------------------------------------------------------------
 
@@ -1264,7 +1647,11 @@ local function renderAim()
 
 	if best then
 		stats.locked = best.ztype
-		aimCameraAt(cam, bestPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
+		-- While the movement is on a long haul it owns the camera, or the two
+		-- would fight and the walk would curve.
+		if not move.travelling then
+			aimCameraAt(cam, bestPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
+		end
 		if flag("Triggerbot") or autoFight then
 			fireTriggerbot(math.floor(center.X), math.floor(center.Y))
 		end
@@ -1274,7 +1661,7 @@ local function renderAim()
 	-- Nothing in the cone. Unattended that is a dead end: zombies arriving from
 	-- behind never enter the view, so the run would just stand there. Turn
 	-- toward the nearest one instead and it walks into the cone by itself.
-	if not autoFight then return end
+	if not autoFight or move.travelling then return end
 
 	local turnPos, turnDist
 	for _, e in pairs(Entities) do
@@ -1335,6 +1722,7 @@ end
 local statusLabel
 local autoLeaveLabel
 local farmLabel
+local moveLabel
 local farmToggleHandle
 
 do
@@ -1629,12 +2017,12 @@ do
 				.. "day the bot cannot finish.",
 		})
 		farmBox:AddToggle("FarmStopOnMoveTask", {
-			Text = "Stop on days that need you to move",
+			Text = "Pause on days that need you to move",
 			Default = DEFAULTS.FarmStopOnMoveTask,
 			VisibleWhen = "FarmEnabled",
-			Tooltip = "SOS, Resupply and Power ask you to reach a survivor, carry a supply back or "
-				.. "restore power. Shooting cannot finish those, so the farm stops with a note instead "
-				.. "of failing over and over.",
+			Tooltip = "On by default: the movement below handles SOS, Resupply and Power but its "
+				.. "navigation is not yet reliable, so those days stop with a note rather than wander. "
+				.. "Turn this off to let it try them.",
 		})
 		farmBox:AddToggle("FarmClaimTasks", {
 			Text = "Claim finished challenges",
@@ -1642,6 +2030,36 @@ do
 			Tooltip = "Checks the Hourly / Daily / Weekly / Monthly challenges once a minute and claims "
 				.. "any that are complete but uncollected.",
 		})
+		local moveBox = farmTab:AddLeftGroupbox("Movement", "footprints")
+		moveBox:AddToggle("MoveEnabled", {
+			Text = "Move me",
+			Default = DEFAULTS.MoveEnabled,
+			Tooltip = "Simulated WASD, which the game's own control module reads. It only engages while "
+				.. "the farm is driving a live mission, so manual play is left alone.",
+		})
+		moveBox:AddSlider("MoveKeepDistance", {
+			Text = "Keep away from zombies",
+			Min = 5, Max = 60, Increment = 1, Default = DEFAULTS.MoveKeepDistance, Suffix = " st",
+			Tooltip = "Backs off whenever a zombie gets inside this ring.",
+		})
+		moveBox:AddSlider("MoveStandoff", {
+			Text = "Objective standoff",
+			Min = 2, Max = 40, Increment = 1, Default = DEFAULTS.MoveStandoff, Suffix = " st",
+			Tooltip = "How close to get to a rescue / supply / survivor and then hold. Close enough to "
+				.. "defend, not standing on top of them.",
+		})
+		moveBox:AddSlider("MoveDodgeRadius", {
+			Text = "Dodge projectiles within",
+			Min = 5, Max = 50, Increment = 1, Default = DEFAULTS.MoveDodgeRadius, Suffix = " st",
+			Tooltip = "Sidesteps anything travelling towards you inside this range.",
+		})
+		moveBox:AddSlider("MoveFleeHealth", {
+			Text = "Flee below",
+			Min = 5, Max = 90, Increment = 5, Default = DEFAULTS.MoveFleeHealth, Suffix = "% health",
+			Tooltip = "Below this the objective is dropped and distance is put on the horde instead.",
+		})
+		moveLabel = moveBox:AddLabel("Move: idle")
+
 		farmLabel = farmBox:AddLabel("Farm: idle")
 
 		local farmHowBox = farmTab:AddRightGroupbox("What it does and does not do", "list-checks")
@@ -1747,6 +2165,21 @@ task.spawn(function()
 	end
 end)
 
+-- Movement runs on its own faster loop: steering has to keep up with the camera
+-- the aimbot is turning, but the watchers above walk GUI trees and have no
+-- business running twenty times a second.
+task.spawn(function()
+	while running do
+		local ok, err = pcall(moveThink)
+		if not ok then
+			warn("[ComzESP] move:", err)
+			-- never leave a key held if the steering logic falls over
+			pcall(releaseAll)
+		end
+		task.wait(0.05)
+	end
+end)
+
 task.spawn(function()
 	while running do
 		local ok, err = pcall(rebuildEntities)
@@ -1772,6 +2205,9 @@ task.spawn(function()
 				farmLabel:Set(("Farm: %s | %s | runs %d, cleared %d, failed %d | claims: %s")
 					:format(farm.state, farm.note, farm.runs, farm.wins, farm.losses, claims.note))
 			end)
+		end
+		if moveLabel then
+			pcall(function() moveLabel:Set("Move: " .. move.note) end)
 		end
 	end
 end)
@@ -1804,6 +2240,9 @@ local function stop(destroyWindow)
 
 	pcall(function() RunService:UnbindFromRenderStep("ComzESP") end)
 	pcall(function() RunService:UnbindFromRenderStep("ComzAim") end)
+
+	-- A held movement key would keep the character walking after teardown.
+	pcall(releaseAll)
 
 	for id, pool in pairs(pools) do
 		destroyPool(pool)
@@ -1841,7 +2280,18 @@ G.ComzESP = {
 	AutoLeave = function() return autoLeave end,
 	Farm = function() return farm end,
 	Claims = function() return claims end,
+	Move = function() return move end,
 	FarmToggle = farmToggleHandle,
+	-- Sets a flag through its element handle, so the UI and any listeners stay in
+	-- sync (writing EZ.Flags directly does neither).
+	SetFlag = function(id, value)
+		local handle = EZ and EZ._elements and EZ._elements[id]
+		if handle and handle.Set then
+			handle:Set(value)
+			return true
+		end
+		return false
+	end,
 	Flags = DEFAULTS,
 }
 
