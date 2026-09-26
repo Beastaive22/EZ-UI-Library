@@ -102,6 +102,14 @@ local GAMES = {
 		universes = { 9410753415 },
 		places = { 109826671174115 },
 	},
+	{
+		slug = "cellular", name = "Cellular.io", note = "minimap + tracers + feed",
+		universes = { 10470290403 },              -- imcensil
+	},
+	{
+		slug = "call-of-mini-zombies-2", name = "Call of Mini Zombies 2", note = "zombie ESP + aim assist",
+		universes = { 5497606909 },               -- Call of Bloxia Productions
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
