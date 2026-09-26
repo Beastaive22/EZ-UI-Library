@@ -113,6 +113,7 @@ local DEFAULTS = {
 	MoveStandoff = 10,
 	MoveFleeHealth = 35,
 	MoveDodgeRadius = 18,
+	MoveHazardRadius = 10,
 }
 
 local EZ, Window
@@ -1084,6 +1085,72 @@ local function navTarget(me, obj)
 	return wp.Position
 end
 
+-- Anything that could hurt to stand near. The two client folders hold live
+-- projectiles and effects (acid, puddles); the map holds invisible trigger
+-- volumes named DangerPart. Names are matched loosely because the set is not
+-- documented anywhere and a missed hazard costs health.
+local HAZARD_WORDS = { "danger", "acid", "puddle", "hazard", "poison", "fire", "lava", "zone", "spill", "toxic" }
+
+local function isHazardName(name)
+	local n = name:lower()
+	for _, word in ipairs(HAZARD_WORDS) do
+		if n:find(word, 1, true) then return true end
+	end
+	return false
+end
+
+local hazardCache, hazardCacheAt = {}, 0
+
+-- Walking the map every tick would be far too expensive, so the list is cached
+-- and refreshed on a slow timer.
+local function hazardParts()
+	local now = os.clock()
+	if now - hazardCacheAt < 2 then return hazardCache end
+	hazardCacheAt = now
+
+	local found = {}
+	local cm = Workspace:FindFirstChild("CURRENT_MAP")
+	local map = cm and cm:GetChildren()[1]
+	if map then
+		for _, d in ipairs(map:GetDescendants()) do
+			if d:IsA("BasePart") and isHazardName(d.Name) then found[#found + 1] = d end
+		end
+	end
+	hazardCache = found
+	return found
+end
+
+-- Radial push away from a hazard's centre — the right answer for a blob on the
+-- floor, where stepping off it matters more than which way.
+local function groundHazardPush(me, radius)
+	local push = Vector3.zero
+	for _, folderName in ipairs({ "ClientZombieEffects", "ClientZombieProjectiles" }) do
+		local folder = Workspace:FindFirstChild(folderName)
+		if folder then
+			for _, obj in ipairs(folder:GetChildren()) do
+				local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
+				if part then
+					local away = me - part.Position
+					local dist = away.Magnitude
+					if dist > 0.01 and dist < radius then
+						push = push + away.Unit * ((radius - dist) / radius)
+					end
+				end
+			end
+		end
+	end
+	for _, part in ipairs(hazardParts()) do
+		if part.Parent then
+			local away = me - part.Position
+			local dist = away.Magnitude
+			if dist > 0.01 and dist < radius then
+				push = push + away.Unit * ((radius - dist) / radius)
+			end
+		end
+	end
+	return push
+end
+
 local stuck = { bestDist = nil, since = 0, bias = 0, cycles = 0 }
 
 local function rotateY(v, degrees)
@@ -1224,10 +1291,46 @@ local function taskFolder(map, task)
 	return nil
 end
 
--- Priority matters: the interaction target is often an invisible trigger volume
--- (RESUPPLY's SUPPLY_PICKUP sits at Transparency = 1), so "has a touch
--- transmitter" is checked before, and independently of, visibility.
-local function objectivePoint()
+-- SOS and similar lay out an invisible waypoint route (SOS/Waypoints/WP*). Which
+-- end is the goal is not labelled anywhere, so the one farthest from the player
+-- is taken as the destination — and the choice is held until the player gets
+-- close, so it cannot flip mid-walk and leave the run oscillating.
+local wpChoice
+local function waypointTarget(me, folder)
+	local route = folder:FindFirstChild("Waypoints")
+	if not route then return nil end
+
+	local parts = {}
+	for _, d in ipairs(route:GetChildren()) do
+		if d:IsA("BasePart") then parts[#parts + 1] = d end
+	end
+	if #parts == 0 then return nil end
+
+	if wpChoice and wpChoice.Parent and (me - wpChoice.Position).Magnitude > 15 then
+		return wpChoice.Position
+	end
+
+	local best, bestDist
+	for _, p in ipairs(parts) do
+		local d = (me - p.Position).Magnitude
+		if bestDist == nil or d > bestDist then bestDist, best = d, p end
+	end
+	wpChoice = best
+	return best and best.Position
+end
+
+-- Priority order, and it matters:
+--   1. The game's own waypoint arrow. Each task folder holds ARROW models whose
+--      MeshPart is visible only while that step is the one outstanding — on
+--      Resupply the supply's arrow hides and the base's appears the moment the
+--      box is picked up. Following it is what makes the return leg work at all;
+--      without it the run reaches the supply and then has nothing to do.
+--   2. A part with a TouchTransmitter — the interaction volume. This is often
+--      invisible by design (RESUPPLY's SUPPLY_PICKUP sits at Transparency = 1),
+--      so it is checked independently of visibility, and after the arrow.
+--   3. An invisible waypoint route (SOS).
+--   4. Any visible part, so a task with none of the above still has a goal.
+local function objectivePoint(me)
 	local cm = Workspace:FindFirstChild("CURRENT_MAP")
 	local map = cm and cm:GetChildren()[1]
 	if not map then return nil end
@@ -1238,14 +1341,22 @@ local function objectivePoint()
 	local folder = taskFolder(map, info.Task)
 	if not folder then return nil end
 
-	local first
+	local arrow, touch, visible
 	for _, d in ipairs(folder:GetDescendants()) do
 		if d:IsA("BasePart") then
-			if d:FindFirstChildOfClass("TouchTransmitter") then return d.Position end
-			if d.Transparency < 0.9 then first = first or d.Position end
+			if not arrow and d.Name:upper():find("ARROW") and d.Transparency < 0.5 then
+				arrow = d.Position
+			end
+			if not touch and d:FindFirstChildOfClass("TouchTransmitter") then
+				touch = d.Position
+			end
+			if not visible and d.Transparency < 0.9 then
+				visible = d.Position
+			end
 		end
 	end
-	return first
+
+	return arrow or touch or waypointTarget(me, folder) or visible
 end
 
 local function moveThink()
@@ -1273,7 +1384,7 @@ local function moveThink()
 	--    (reach the survivor), Resupply (reach the supply) and Power (reach the
 	--    survivors) playable at all. Holding a standoff rather than hugging it is
 	--    also what "stick around him" wants: close enough to defend, not on top.
-	local obj = objectivePoint()
+	local obj = objectivePoint(me)
 	local toObjDir
 	local pull = 0
 	local objDist
@@ -1310,11 +1421,20 @@ local function moveThink()
 		end
 	end
 
-	-- 3. Sidestep anything flying at us.
+	-- 3. Sidestep anything flying at us, and step off anything on the floor.
 	local dodge = dodgePush(me, flag("MoveDodgeRadius"), desired.Magnitude > 0.001 and desired.Unit or nil)
 	if dodge.Magnitude > 0.001 then
 		desired = desired + dodge.Unit * 1.6
 		note = note and (note .. " + dodging") or "dodging"
+	end
+
+	local hazard = groundHazardPush(me, flag("MoveHazardRadius"))
+	if hazard.Magnitude > 0.001 then
+		-- Deliberately stronger than the objective pull: nothing on the floor is
+		-- worth standing in, and it is re-evaluated every tick so stepping out
+		-- only costs a moment.
+		desired = desired + hazard.Unit * math.min(3, hazard.Magnitude * 3)
+		note = note and (note .. " + hazard") or "avoiding hazard"
 	end
 
 	-- 4. Hurt badly: the objective can wait, put distance on first.
@@ -2057,6 +2177,12 @@ do
 			Text = "Flee below",
 			Min = 5, Max = 90, Increment = 5, Default = DEFAULTS.MoveFleeHealth, Suffix = "% health",
 			Tooltip = "Below this the objective is dropped and distance is put on the horde instead.",
+		})
+		moveBox:AddSlider("MoveHazardRadius", {
+			Text = "Step off hazards within",
+			Min = 0, Max = 40, Increment = 1, Default = DEFAULTS.MoveHazardRadius, Suffix = " st",
+			Tooltip = "Acid, puddles, anything named as a danger zone, and whatever the client spawns into "
+				.. "ClientZombieEffects — it walks out of these. Set 0 to ignore them.",
 		})
 		moveLabel = moveBox:AddLabel("Move: idle")
 
