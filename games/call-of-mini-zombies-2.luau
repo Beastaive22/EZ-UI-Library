@@ -86,7 +86,10 @@ local DEFAULTS = {
 	DrawBosses = true,
 
 	AimEnabled = false,
-	AimFov = 150,
+	-- Degrees, not pixels. A pixel radius silently changes the real cone with the
+	-- player's resolution, so the same 150 meant a wide sweep on a 1080p client
+	-- and a narrow one on 1440p.
+	AimFovDeg = 20,
 	ShowFov = true,
 	AimSpeed = 35,
 	AimDistance = 300,
@@ -96,6 +99,24 @@ local DEFAULTS = {
 	-- default and it kept picking whatever happened to sit under the reticle,
 	-- including something far away, while a zombie was already on top of the run.
 	AimPriority = "Nearest",
+	-- Fire only when the crosshair is genuinely on the target. Without this the
+	-- triggerbot fired the moment a target was selected, while the camera was
+	-- still easing in at AimSpeed, so most rounds left before the gun pointed at
+	-- anything. This is what makes it a head tap instead of a spray.
+	AimFireGate = 1.6,
+	-- Keep the current target unless another is at least this much better (%).
+	-- Re-picking the nearest every frame makes it flip between neighbours in a
+	-- crowd, and every flip swings the whole camera.
+	AimSwitchMargin = 25,
+	-- Bullets in this game are real projectiles carrying the weapon's own
+	-- BulletSpeed (FN-2000 = 2000), so a moving target has to be led.
+	AimLead = true,
+	-- 0 = read BulletSpeed off the equipped weapon; anything else overrides it.
+	AimLeadSpeed = 0,
+	-- Draw a marker on the proxy part being aimed at. The proxy is invisible and
+	-- sits ~1.17 studs from the rendered head, so without this the crosshair looks
+	-- off the zombie even when it is exactly on the hitbox.
+	ShowAimPoint = true,
 	Triggerbot = false,
 	TriggerCps = 12,
 
@@ -122,6 +143,20 @@ local DEFAULTS = {
 	MoveFleeHealth = 35,
 	MoveDodgeRadius = 30,
 	MoveHazardRadius = 10,
+
+	-- Presses the game's own side-ability button. OFF BY DEFAULT because testing
+	-- could not get it to fire: the button's handler bails out unless the ability's
+	-- own conditions are met (JoeBlo's dash needs a zombie in front, and the
+	-- presentation module returns nil without one), and even a valid presentation
+	-- token sent by hand did not start the cooldown server-side. Turn it on to try
+	-- it — a press that does nothing is harmless, but it is not yet a speed source
+	-- to rely on the way the slider below is.
+	AbilityAuto = false,
+
+	-- Off by default, deliberately. See the speed section for why raising
+	-- WalkSpeed in this game is a real risk rather than a formality.
+	SpeedBoostEnabled = false,
+	SpeedBoostValue = 20,
 }
 
 local EZ, Window
@@ -144,6 +179,12 @@ end
 local Entities = {}     -- [guid] = entity
 local zombieModels = {} -- every proxy + visual model, for raycast filtering
 local proxyCount = 0
+
+-- [proxy model] = { pos, at, vel } — how fast each zombie is moving, for leading
+-- a shot. Sampled in rebuildEntities (which already visits every proxy, and 10 Hz
+-- is plenty) and keyed on the proxy model, because the entity tables themselves
+-- are rebuilt from scratch on every scan.
+local trackHistory = setmetatable({}, { __mode = "k" })
 
 -- Filled by knownTypes() when the filter dropdown is built. Declared up here
 -- because renderESP reads it, and a local declared further down would not be in
@@ -288,6 +329,35 @@ local function rebuildEntities()
 		if e.proxy and e.proxy.Parent then models[#models + 1] = e.proxy end
 	end
 
+	-- Sample how fast each zombie is moving while the walk already has its hands
+	-- on the proxy. Read from position history rather than AssemblyLinearVelocity:
+	-- this game moves things by writing CFrames (the visuals are anchored), so a
+	-- physics velocity is frequently zero and every lead would be a no-op.
+	local now = os.clock()
+	for _, e in pairs(byId) do
+		local proxy = e.proxy
+		local part = proxy
+			and (proxy:FindFirstChild("Head") or proxy:FindFirstChild("Torso"))
+		if part then
+			local prev = trackHistory[proxy]
+			local pos = part.Position
+			if not prev then
+				trackHistory[proxy] = { pos = pos, at = now }
+			else
+				local dt = now - prev.at
+				if dt > 0.02 and dt < 0.6 then
+					local v = (pos - prev.pos) / dt
+					-- Smoothed: a single 0.1s difference is noisy, and a jittery
+					-- lead is worse than none at all.
+					prev.vel = prev.vel and (prev.vel * 0.65 + v * 0.35) or v
+					prev.pos, prev.at = pos, now
+				elseif dt >= 0.6 then
+					prev.pos, prev.at, prev.vel = pos, now, nil
+				end
+			end
+		end
+	end
+
 	Entities = byId
 	zombieModels = models
 end
@@ -335,6 +405,7 @@ local pools = {}      -- [guid] = drawing set
 local chams = {}      -- [guid] = Highlight
 local chamsFolder
 local fovCircle
+local aimPoint
 
 local function newPool()
 	local p = {
@@ -470,15 +541,79 @@ end
 
 -- Proxy Head/Torso are the parts the game's own bullets raycast against
 -- (CanQuery = true). HumanoidRootPart is not, so it is never an aim target.
+--
+-- There is deliberately no fallback to the visual's Head/HumanoidRootPart: every
+-- part of the visual has CanQuery = false and no bullet can hit it, so aiming
+-- there produced shots that looked right and did nothing. An entity with no
+-- proxy is unshootable and is now skipped instead of faked.
 local function aimPartFor(e)
 	local part = proxyPart(e, flag("AimPart"))
 	if part then return part end
-	part = proxyPart(e, "Head") or proxyPart(e, "Torso")
-	if part then return part end
-	-- Proxy gone or shaped unusually: fall back to what is on screen.
-	return e.head or e.root
+	return proxyPart(e, "Head") or proxyPart(e, "Torso")
 end
 
+-- The weapon carries its own muzzle velocity (FN-2000 = 2000 studs/s), which is a
+-- far better number than any guess. AimLeadSpeed overrides it when non-zero.
+local leadSpeedCache, leadSpeedAt = nil, 0
+
+local function leadSpeed()
+	local override = flag("AimLeadSpeed")
+	if override and override > 0 then return override end
+
+	local now = os.clock()
+	if now - leadSpeedAt < 5 then return leadSpeedCache end
+	leadSpeedAt = now
+
+	local char = LocalPlayer.Character
+	local tool = char and char:FindFirstChildWhichIsA("Tool")
+	local setting = tool and tool:FindFirstChild("Setting")
+	local mod = setting and setting:FindFirstChild("1")
+	if not mod then
+		leadSpeedCache = nil
+		return nil
+	end
+
+	-- Requiring a game module can throw; a missing speed simply means no lead.
+	local ok, cfg = pcall(require, mod)
+	local speed = ok and type(cfg) == "table" and tonumber(cfg.BulletSpeed) or nil
+	leadSpeedCache = (speed and speed > 0) and speed or nil
+	return leadSpeedCache
+end
+
+-- Where to point so the round meets a moving target: where it is now, plus
+-- however far it will have travelled by the time the bullet arrives.
+local function leadTarget(e, part, camPos)
+	local pos = part.Position
+	if not flag("AimLead") then return pos end
+
+	local speed = leadSpeed()
+	if not speed then return pos end
+
+	local vel = e.proxy and trackHistory[e.proxy]
+	vel = vel and vel.vel
+	if not vel or vel.Magnitude < 0.1 then return pos end
+
+	-- Iterated twice because the flight time depends on the distance to the lead
+	-- point, which is the thing being solved for. Two passes converge here.
+	local flight = (pos - camPos).Magnitude / speed
+	for _ = 1, 2 do
+		flight = ((pos + vel * flight) - camPos).Magnitude / speed
+	end
+	return pos + vel * flight
+end
+
+-- Angle in degrees between where the camera looks and the target: the fire gate.
+local function aimError(cam, targetPos)
+	local delta = targetPos - cam.CFrame.Position
+	if delta.Magnitude < 0.05 then return 0 end
+	local cos = math.clamp(cam.CFrame.LookVector:Dot(delta.Unit), -1, 1)
+	return math.deg(math.acos(cos))
+end
+
+-- Rebuilt from absolute yaw and pitch every frame instead of composed onto the
+-- current CFrame. `cam.CFrame * CFrame.Angles(pitch, yaw, 0)` rotates the yaw
+-- about an axis the pitch has already tilted, so roll creeps in and never
+-- cancels — the horizon slowly tilts for as long as the aimbot runs.
 local function aimCameraAt(cam, targetPos, alpha)
 	local camPos = cam.CFrame.Position
 	local delta = targetPos - camPos
@@ -495,7 +630,11 @@ local function aimCameraAt(cam, targetPos, alpha)
 	local yawDelta = (wantYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
 	local pitchDelta = wantPitch - curPitch
 
-	cam.CFrame = cam.CFrame * CFrame.Angles(pitchDelta * alpha, yawDelta * alpha, 0)
+	local newYaw = curYaw + yawDelta * alpha
+	-- Straight up and down is a gimbal trap, so stop just short of the poles.
+	local newPitch = math.clamp(curPitch + pitchDelta * alpha, -1.5, 1.5)
+
+	cam.CFrame = CFrame.new(camPos) * CFrame.fromEulerAnglesYXZ(newPitch, newYaw, 0)
 end
 
 local triggerReady = true
@@ -911,6 +1050,143 @@ local function watchFarm()
 	farm.enteredLobbyAt = nil
 	clickButton(btn)
 end
+
+----------------------------------------------------------------
+-- speed
+----------------------------------------------------------------
+
+-- The game's own side ability is the only speed source here that cannot be
+-- held against you: its cooldown is enforced by a server-written attribute and
+-- pressing it is the same button a player presses. Nothing about it is
+-- distinguishable from a human playing well.
+--
+-- Raising Humanoid.WalkSpeed is a different matter, and the reason the slider
+-- below ships off. The character carries a RemoteFunction that hands
+-- {WalkSpeed, JumpPower} to the server whenever it asks, and a WarningMessage
+-- script whose entire content is "Suspicious Activity Detected! Your account is
+-- at risk of being banned." A WalkSpeed change cannot be hidden from either one.
+local speed = {
+	orig = nil,       -- the game's own WalkSpeed for this character, to put back
+	lastAbility = 0,
+	note = "idle",
+}
+
+-- Every side-ability cooldown is written to the character as
+-- <Character>SideReadyAt, and they are all stamped together, so the latest one
+-- is the one that matters.
+local ABILITY_READY_SUFFIX = "SideReadyAt"
+
+local function currentHumanoid()
+	local ch = LocalPlayer.Character
+	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 then return hum end
+	return nil
+end
+
+local function restoreWalkSpeed()
+	if not speed.orig then return end
+	local hum = currentHumanoid()
+	if hum then pcall(function() hum.WalkSpeed = speed.orig end) end
+	speed.orig = nil
+end
+
+-- The game sets WalkSpeed itself — it is 16.05 in a match rather than the stock
+-- 16, and weapons modify it — so the value found on arrival is remembered and
+-- put back verbatim rather than assumed to be 16.
+local function applyWalkSpeed()
+	if not flag("SpeedBoostEnabled") then
+		restoreWalkSpeed()
+		speed.note = "off"
+		return
+	end
+
+	local hum = currentHumanoid()
+	if not hum then return end
+
+	if not speed.orig then speed.orig = hum.WalkSpeed end
+	local want = math.clamp(flag("SpeedBoostValue"), 8, 200)
+	if math.abs(hum.WalkSpeed - want) > 0.01 then
+		pcall(function() hum.WalkSpeed = want end)
+	end
+	speed.note = ("%.0f (game had %.2f)"):format(want, speed.orig)
+end
+
+local function abilityButton()
+	local pg = LocalPlayer.PlayerGui
+	local hud = pg and pg:FindFirstChild("HUD")
+	if not hud or not hud.Enabled then return nil end
+	local af = hud:FindFirstChild("AbilityFrame")
+	local btn = af and af:FindFirstChild("BUTTON", true)
+	if btn and isShowing(btn) then return btn end
+	return nil
+end
+
+-- Ready is the server's own answer. The button's countdown label is the fallback
+-- for a character whose ability does not stamp that attribute.
+local function abilityReady()
+	local ch = LocalPlayer.Character
+	if ch then
+		local latest
+		for name, value in pairs(ch:GetAttributes()) do
+			if type(value) == "number" and name:sub(-#ABILITY_READY_SUFFIX) == ABILITY_READY_SUFFIX then
+				if not latest or value > latest then latest = value end
+			end
+		end
+		if latest then return latest <= workspace:GetServerTimeNow() end
+	end
+
+	local btn = abilityButton()
+	local timer = btn and btn:FindFirstChild("TIMER")
+	if timer and timer:IsA("TextLabel") then return timer.Text == "" end
+	return false
+end
+
+-- Fired as a signal rather than keyed: the game's own handler works out whatever
+-- the ability needs, direction included, and LeftShift is also Roblox's own
+-- shift-lock toggle, so synthesising the key would fight the game for it.
+--
+-- firesignal drives the button's own MouseButton1Click handler directly, so it
+-- cannot be swallowed by a GUI hit test or land on the wrong control if the HUD
+-- moves. The synthetic click is kept as the fallback for an executor without it.
+local function pressAbility()
+	local btn = abilityButton()
+	if not btn then return false end
+
+	if type(firesignal) == "function" then
+		if pcall(firesignal, btn.MouseButton1Click) then return true end
+	end
+
+	clickButton(btn)
+	return true
+end
+
+local function watchSpeed()
+	-- Never leave a raised WalkSpeed behind once the run is over, whatever the
+	-- toggle says.
+	if not inMission() then
+		restoreWalkSpeed()
+		speed.note = "idle"
+		return
+	end
+
+	applyWalkSpeed()
+
+	if not flag("AbilityAuto") then return end
+	-- Asking is harmless while it is still cooling down — the server simply
+	-- refuses — but there is no reason to hammer it either.
+	if os.clock() - speed.lastAbility < 1 then return end
+	if not abilityReady() then return end
+	if pressAbility() then speed.lastAbility = os.clock() end
+end
+
+-- A new character means a new Humanoid with the game's own WalkSpeed, so the
+-- remembered value has to be dropped or the restored speed would be the last
+-- character's.
+LocalPlayer.CharacterAdded:Connect(function()
+	speed.orig = nil
+	speed.lastAbility = 0
+	task.defer(applyWalkSpeed)
+end)
 
 ----------------------------------------------------------------
 -- challenge auto-claim
@@ -1920,6 +2196,21 @@ local function renderESP()
 	stats.onScreen = onScreenCount
 end
 
+-- Aim state that has to survive between frames: which target is being held, and
+-- which one the turn fallback committed to. Both exist because re-deciding from
+-- scratch sixty times a second is what made the camera thrash.
+local aim = { currentId = nil, turnId = nil, turnAt = 0 }
+
+-- The FOV is an angle now, so it means the same thing at any resolution. The
+-- circle is drawn at whatever pixel radius that angle covers on this viewport.
+local function fovPixelRadius(cam)
+	local fov = math.rad(math.clamp(flag("AimFovDeg"), 0.5, 89))
+	local half = math.rad(math.clamp(cam.FieldOfView, 1, 120)) / 2
+	local tanHalf = math.tan(half)
+	if tanHalf < 0.001 then return 0 end
+	return (cam.ViewportSize.Y / 2) * math.tan(fov) / tanHalf
+end
+
 local function renderAim()
 	local cam = Workspace.CurrentCamera
 	if not cam then return end
@@ -1938,7 +2229,7 @@ local function renderAim()
 		if enabled and flag("ShowFov") then
 			fovCircle.Visible = true
 			fovCircle.Position = center
-			fovCircle.Radius = flag("AimFov")
+			fovCircle.Radius = fovPixelRadius(cam)
 			fovCircle.Thickness = 1
 			fovCircle.Color = Color3.fromRGB(255, 255, 255)
 			fovCircle.Transparency = 0.5
@@ -1947,38 +2238,48 @@ local function renderAim()
 		end
 	end
 
-	stats.locked = nil
-	if not enabled then return end
+	stats.locked, stats.aimError, stats.aimPos = nil, nil, nil
+	if not enabled then
+		aim.currentId, aim.turnId = nil, nil
+		if aimPoint then aimPoint.Visible = false end
+		return
+	end
 
 	local active = autoFight
 		or (aimKeyHandle and aimKeyHandle:IsActive())
 		or (aimKeyHandle == nil and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
-	if not active then return end
+	if not active then
+		aim.currentId, aim.turnId = nil, nil
+		if aimPoint then aimPoint.Visible = false end
+		return
+	end
 
-	local fov = flag("AimFov")
+	local fovDeg = flag("AimFovDeg")
 	local maxDist = flag("AimDistance")
 	local visibleOnly = flag("AimVisibleOnly")
 	local byDistance = flag("AimPriority") == "Nearest"
 	local camPos = cam.CFrame.Position
 
-	local best, bestScore, bestPos
+	local best, bestScore
+	-- Score of the target being held, if it is still a legal choice this frame.
+	local heldScore
 
 	for _, e in pairs(Entities) do
 		if e.alive then
 			local part = aimPartFor(e)
 			local pos = part and part.Position
 			if pos then
-				local sp, onScreen = cam:WorldToViewportPoint(pos)
-				if onScreen and sp.Z > 0 then
-					local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-					if screenDist <= fov then
-						local worldDist = (camPos - pos).Magnitude
-						if worldDist <= maxDist then
-							local score = byDistance and worldDist or screenDist
-							if not bestScore or score < bestScore then
-								if not visibleOnly or isVisible(e, pos) then
-									bestScore, best, bestPos = score, e, pos
-								end
+				-- An angular cone is circular on screen and resolution-proof, and
+				-- it excludes anything behind the camera for free (>90 degrees).
+				local err = aimError(cam, pos)
+				if err <= fovDeg then
+					local worldDist = (camPos - pos).Magnitude
+					if worldDist <= maxDist then
+						local score = byDistance and worldDist or err
+						if e.id == aim.currentId then heldScore = score end
+						if not bestScore or score < bestScore then
+							if not visibleOnly or isVisible(e, pos) then
+								bestScore, best = score, e
 							end
 						end
 					end
@@ -1987,47 +2288,127 @@ local function renderAim()
 		end
 	end
 
-	if best then
+	-- Hysteresis. Picking the nearest every frame made it flip between two zombies
+	-- at almost equal range in a crowd, and every flip swings the whole camera —
+	-- which is exactly what read as the bot hallucinating its target.
+	if best and heldScore and best.id ~= aim.currentId then
+		local margin = math.clamp(flag("AimSwitchMargin") / 100, 0, 0.9)
+		if bestScore >= heldScore * (1 - margin) then
+			local held = Entities[aim.currentId]
+			local heldPart = held and held.alive and aimPartFor(held)
+			if heldPart then
+				best = held
+			end
+		end
+	end
+
+	local part = best and best.alive and aimPartFor(best)
+	if part then
+		aim.currentId = best.id
+		aim.turnId = nil
 		stats.locked = best.ztype
-		-- Surfaced in the status line so it is visible what is being aimed at:
-		-- the proxy Head is the hittable head (CanQuery = true) and sits ~1.2
-		-- studs from the rendered one, so a crosshair that looks slightly off the
-		-- mesh is still on the head hitbox.
-		local part = aimPartFor(best)
-		stats.aimPart = part and part.Name or "?"
+		-- Surfaced so it is visible what is actually being aimed at: the proxy
+		-- Head is the hittable head (CanQuery = true) and sits ~1.17 studs from
+		-- the rendered one, so a crosshair that looks slightly off the mesh is
+		-- still dead on the head hitbox.
+		stats.aimPart = part.Name
+
+		local aimPos = leadTarget(best, part, camPos)
+		stats.aimPos = aimPos
+
 		-- While the movement is on a long haul it owns the camera, or the two
 		-- would fight and the walk would curve.
 		if not move.travelling then
-			aimCameraAt(cam, bestPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
+			aimCameraAt(cam, aimPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
 		end
-		if flag("Triggerbot") or autoFight then
+
+		-- Fire gate: shoot only once the crosshair is genuinely on the target.
+		-- Without it the triggerbot fired the instant a target was selected,
+		-- while the camera was still easing in at AimSpeed, so most rounds left
+		-- before the gun pointed at anything.
+		local err = aimError(cam, aimPos)
+		stats.aimError = err
+		if (flag("Triggerbot") or autoFight) and err <= flag("AimFireGate") then
 			fireTriggerbot(math.floor(center.X), math.floor(center.Y))
+		end
+
+		-- Show exactly where the shot is being sent. Green while the shot is
+		-- allowed, red while the fire gate is still holding it — so it is obvious
+		-- at a glance whether the aim is on target or the gate is too tight.
+		if aimPoint then
+			if flag("ShowAimPoint") then
+				local sp, onScreen = cam:WorldToViewportPoint(aimPos)
+				if onScreen and sp.Z > 0 then
+					local size = 12
+					aimPoint.Visible = true
+					aimPoint.Position = Vector2.new(sp.X - size / 2, sp.Y - size / 2)
+					aimPoint.Size = Vector2.new(size, size)
+					aimPoint.Color = err <= flag("AimFireGate")
+						and Color3.fromRGB(80, 255, 120)
+						or Color3.fromRGB(255, 90, 90)
+				else
+					aimPoint.Visible = false
+				end
+			else
+				aimPoint.Visible = false
+			end
 		end
 		return
 	end
 
-	-- Nothing in the cone. Unattended that is a dead end: zombies arriving from
-	-- behind never enter the view, so the run would just stand there. Turn
-	-- toward the nearest one instead and it walks into the cone by itself.
-	if not autoFight or move.travelling then return end
+	if aimPoint then aimPoint.Visible = false end
+	aim.currentId = nil
 
-	local turnPos, turnDist
+	-- Nothing in the cone. Unattended that is a dead end: zombies arriving from
+	-- behind never enter the view, so the run would just stand there. Turn toward
+	-- one instead and it walks into the cone by itself — but only a VISIBLE one,
+	-- and only every so often. Re-choosing the nearest every frame whipped the
+	-- camera between two zombies at similar range and it never settled.
+	if not autoFight or move.travelling then
+		aim.turnId = nil
+		return
+	end
+
+	local now = os.clock()
+	local turnSpeed = math.clamp(flag("AimSpeed") / 100, 0.01, 1)
+
+	-- Hold a committed turn for a moment so it can actually complete.
+	if aim.turnId and now - aim.turnAt < 1.2 then
+		local held = Entities[aim.turnId]
+		local heldPart = held and held.alive and aimPartFor(held)
+		if heldPart then
+			stats.locked = "(turning)"
+			aimCameraAt(cam, heldPart.Position, turnSpeed)
+			return
+		end
+		aim.turnId = nil
+	end
+
+	-- And do not re-pick the turn target more than a couple of times a second.
+	if now - aim.turnAt < 0.4 then return end
+
+	local turn, turnDist
 	for _, e in pairs(Entities) do
 		if e.alive then
-			local part = aimPartFor(e)
-			local pos = part and part.Position
+			local p = aimPartFor(e)
+			local pos = p and p.Position
 			if pos then
 				local d = (camPos - pos).Magnitude
 				if d <= maxDist and (turnDist == nil or d < turnDist) then
-					turnDist, turnPos = d, pos
+					if not visibleOnly or isVisible(e, pos) then
+						turnDist, turn = d, e
+					end
 				end
 			end
 		end
 	end
 
-	if turnPos then
+	aim.turnAt = now
+	local turnPart = turn and aimPartFor(turn)
+	if turnPart then
+		aim.turnId = turn.id
 		stats.locked = "(turning)"
-		aimCameraAt(cam, turnPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
+		aimCameraAt(cam, turnPart.Position, turnSpeed)
 	end
 end
 
@@ -2071,6 +2452,7 @@ local statusLabel
 local autoLeaveLabel
 local farmLabel
 local moveLabel
+local speedLabel
 local farmToggleHandle
 
 do
@@ -2128,6 +2510,14 @@ do
 			Text = "Tracer",
 			Default = DEFAULTS.ShowTracer,
 			Tooltip = "Line from the screen edge to each zombie.",
+		})
+		drawBox:AddToggle("ShowAimPoint", {
+			Text = "Show aim point",
+			Default = DEFAULTS.ShowAimPoint,
+			Tooltip = "A box on the exact hitbox the aimbot is firing at. It goes green when the shot is "
+				.. "allowed and red while it is holding fire. The zombies you see are decoration that "
+				.. "bullets pass straight through — the real hitbox is an invisible model about 1.2 studs "
+				.. "away, so this is how you tell where the shots are really going.",
 		})
 
 		local styleBox = espTab:AddRightGroupbox("Style", "palette")
@@ -2233,10 +2623,40 @@ do
 			Default = DEFAULTS.ShowFov,
 			VisibleWhen = "AimEnabled",
 		})
-		aimBox:AddSlider("AimFov", {
-			Text = "FOV radius",
-			Min = 10, Max = 600, Increment = 5, Default = DEFAULTS.AimFov, Suffix = " px",
+		aimBox:AddSlider("AimFovDeg", {
+			Text = "FOV cone",
+			Min = 1, Max = 90, Increment = 1, Default = DEFAULTS.AimFovDeg, Suffix = "°",
 			VisibleWhen = "AimEnabled",
+			Tooltip = "Half-angle around the crosshair, in degrees. An angle rather than a pixel radius, "
+				.. "so it means the same thing whatever your resolution is.",
+		})
+		aimBox:AddSlider("AimFireGate", {
+			Text = "Fire within",
+			Min = 0.2, Max = 15, Increment = 0.2, Default = DEFAULTS.AimFireGate, Suffix = "°",
+			VisibleWhen = "AimEnabled",
+			Tooltip = "Shoot only once the crosshair is this close to the target. Set it too wide and it "
+				.. "sprays again; too tight and it stops firing at all as zombies move.",
+		})
+		aimBox:AddSlider("AimSwitchMargin", {
+			Text = "Switch target only if better by",
+			Min = 0, Max = 90, Increment = 5, Default = DEFAULTS.AimSwitchMargin, Suffix = "%",
+			VisibleWhen = "AimEnabled",
+			Tooltip = "Stops it flip-flopping between two zombies at almost equal range, which swings the "
+				.. "camera and wastes the shots in between. 0 = always take the closest.",
+		})
+		aimBox:AddToggle("AimLead", {
+			Text = "Lead moving targets",
+			Default = DEFAULTS.AimLead,
+			VisibleWhen = "AimEnabled",
+			Tooltip = "Bullets here are real projectiles, so this aims where the zombie will be rather than "
+				.. "where it is. The travel time comes from the equipped weapon's own BulletSpeed.",
+		})
+		aimBox:AddSlider("AimLeadSpeed", {
+			Text = "Bullet speed override",
+			Min = 0, Max = 3000, Increment = 50, Default = DEFAULTS.AimLeadSpeed, Suffix = " st/s",
+			VisibleWhen = "AimEnabled",
+			Tooltip = "0 = read it off the equipped weapon (your FN-2000 says 2000). Set it only if a "
+				.. "weapon's config cannot be read and the lead looks wrong.",
 		})
 		aimBox:AddSlider("AimSpeed", {
 			Text = "Aim speed",
@@ -2430,11 +2850,61 @@ do
 				.. "Power 2) need you to walk somewhere.",
 		})
 		farmHowBox:AddParagraph({
-			Title = "Not covered: movement",
-			Content = "There is no walk-to-objective yet, so those 15 days will stop the farm rather "
-				.. "than loop on them. That is the next piece of work, and it needs watching a live SOS "
-				.. "or Resupply day to find where the objective is announced.",
+			Title = "Movement is the weak link",
+			Content = "SOS, Resupply and Power need you to walk somewhere, and the movement below does try: "
+				.. "it follows the game's own arrow, paths around geometry, and escorts the person on "
+				.. "escort days. But its navigation is still not reliable — measured runs oscillate rather "
+				.. "than converge — so the farm stops on those 15 days by default rather than burning "
+				.. "attempts on a wander. Turn off the stop toggle to watch it try.",
 		})
+
+		local speedTab = Window:AddTab("Speed", "zap")
+		local abilityBox = speedTab:AddLeftGroupbox("The game's own speed", "wind")
+		abilityBox:AddToggle("AbilityAuto", {
+			Text = "Use my ability on cooldown",
+			Default = DEFAULTS.AbilityAuto,
+			Tooltip = "Presses the game's own ability button for you whenever the server says it is ready. "
+				.. "OFF BY DEFAULT, AND NOT YET RELIABLE. Testing could not get it to fire: the game's "
+				.. "handler refuses unless the ability's own conditions are met, and JoeBlo's dash needs a "
+				.. "zombie in front of you before it will go. A failed press does nothing, so turning it on "
+				.. "is harmless — just do not count on it yet. The ability itself is still the safe way to "
+				.. "be fast once this works properly.",
+		})
+		abilityBox:AddParagraph({
+			Title = "What this does not do",
+			Content = "It does not change how fast you walk. In this game WalkSpeed is the risky thing to "
+				.. "touch, which is what the box on the right is about.",
+		})
+		abilityBox:AddParagraph({
+			Title = "Why the button and not LeftShift",
+			Content = "LeftShift is also Roblox's own shift-lock toggle, so synthesising the key would fight "
+				.. "the game for it. Pressing the ability button is what a player does, and the game's own "
+				.. "handler works out the rest.",
+		})
+
+		local speedBox = speedTab:AddRightGroupbox("WalkSpeed override (risky)", "triangle-alert")
+		speedBox:AddToggle("SpeedBoostEnabled", {
+			Text = "Override my walk speed",
+			Default = DEFAULTS.SpeedBoostEnabled,
+			Tooltip = "OFF BY DEFAULT, AND WORTH LEAVING OFF. Your character carries a script that hands "
+				.. "its WalkSpeed to the server whenever the server asks for it, and another that raises "
+				.. "\"Suspicious Activity Detected! Your account is at risk of being banned.\" A raised "
+				.. "WalkSpeed cannot be hidden from either, and nothing client-side can undo that. This is "
+				.. "the one switch here that puts your account at risk, which is why it is off.",
+		})
+		speedBox:AddSlider("SpeedBoostValue", {
+			Text = "Walk speed",
+			Min = 8, Max = 100, Increment = 1, Default = DEFAULTS.SpeedBoostValue,
+			VisibleWhen = "SpeedBoostEnabled",
+			Tooltip = "The game's own value in a match is about 16.05 rather than the stock 16, so whatever "
+				.. "it is when you switch this on is remembered and put back exactly.",
+		})
+		speedBox:AddParagraph({
+			Title = "Put back on the way out",
+			Content = "Switching the toggle off, dying and respawning, the match ending, or unloading the "
+				.. "script all restore the game's own value.",
+		})
+		speedLabel = speedBox:AddLabel("Speed: idle")
 
 		local infoTab = Window:AddTab("Info", "info")
 		local howBox = infoTab:AddLeftGroupbox("How this reads the game", "scan-eye")
@@ -2499,6 +2969,15 @@ if DRAWING_OK then
 	fovCircle.NumSides = 60
 	fovCircle.Filled = false
 	fovCircle.Visible = false
+
+	-- Marks the exact proxy part the aimbot is firing at. The proxy is invisible
+	-- and sits ~1.17 studs from the rendered head, so without this the crosshair
+	-- looks like it is floating off the zombie even when it is dead on. Seeing it
+	-- is what makes "is it actually aiming at the head?" answerable at a glance.
+	aimPoint = Drawing.new("Square")
+	aimPoint.Filled = false
+	aimPoint.Thickness = 1
+	aimPoint.Visible = false
 end
 
 local running = true
@@ -2515,6 +2994,8 @@ task.spawn(function()
 		if not ok2 then warn("[ComzESP] farm:", err2) end
 		local ok3, err3 = pcall(watchClaims)
 		if not ok3 then warn("[ComzESP] claims:", err3) end
+		local ok4, err4 = pcall(watchSpeed)
+		if not ok4 then warn("[ComzESP] speed:", err4) end
 		task.wait(0.5)
 	end
 end)
@@ -2547,8 +3028,12 @@ task.spawn(function()
 		task.wait(1)
 		if statusLabel then
 			pcall(function()
-				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s")
-					:format(stats.tracked, stats.onScreen, stats.locked or "—", stats.aimPart or "—"))
+				-- The aim error is in the line on purpose: it is the difference
+				-- between "it has a target" and "it is actually allowed to shoot",
+				-- and it is the number to watch when the fire gate needs tuning.
+				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s | err %s")
+					:format(stats.tracked, stats.onScreen, stats.locked or "—", stats.aimPart or "—",
+						stats.aimError and ("%.2f°"):format(stats.aimError) or "—"))
 			end)
 		end
 		if autoLeaveLabel then
@@ -2562,6 +3047,12 @@ task.spawn(function()
 		end
 		if moveLabel then
 			pcall(function() moveLabel:Set("Move: " .. move.note) end)
+		end
+		if speedLabel then
+			pcall(function()
+				speedLabel:Set(("Speed: %s | ability %s"):format(
+					speed.note, flag("AbilityAuto") and (abilityReady() and "ready" or "cooling") or "off"))
+			end)
 		end
 	end
 end)
@@ -2598,6 +3089,10 @@ local function stop(destroyWindow)
 	-- A held movement key would keep the character walking after teardown.
 	pcall(releaseAll)
 
+	-- And a raised WalkSpeed would outlive the script entirely, which is the one
+	-- piece of state here the game would keep seeing after it is gone.
+	pcall(restoreWalkSpeed)
+
 	for id, pool in pairs(pools) do
 		destroyPool(pool)
 		pools[id] = nil
@@ -2609,6 +3104,10 @@ local function stop(destroyWindow)
 	if fovCircle then
 		pcall(function() fovCircle:Remove() end)
 		fovCircle = nil
+	end
+	if aimPoint then
+		pcall(function() aimPoint:Remove() end)
+		aimPoint = nil
 	end
 	if chamsFolder then
 		pcall(function() chamsFolder:Destroy() end)
@@ -2635,6 +3134,8 @@ G.ComzESP = {
 	Farm = function() return farm end,
 	Claims = function() return claims end,
 	Move = function() return move end,
+	Speed = function() return speed end,
+	Aim = function() return aim end,
 	FarmToggle = farmToggleHandle,
 	-- Sets a flag through its element handle, so the UI and any listeners stay in
 	-- sync (writing EZ.Flags directly does neither).
