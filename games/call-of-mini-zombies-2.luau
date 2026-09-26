@@ -1436,6 +1436,29 @@ end
 -- Standing ON an arrow or a pickup is what completes a step, so those must be
 -- closed to zero distance — the configured standoff is only right for the person
 -- being escorted, who you want to be near rather than inside.
+-- Universal VIP tracker. The game attaches an arrow to whatever the run is meant
+-- to go to, and on SOS the bobbing arrow is a child of the person himself. So a
+-- visible arrow whose ancestors include a living Humanoid that is not a zombie
+-- IS the person to escort — no day, task or character name required, and it
+-- keeps working if the game renames anything.
+local function vipFromArrows(map)
+	for _, part in ipairs(arrowParts(map)) do
+		if part.Parent then
+			local node = part.Parent
+			while node and node ~= map do
+				if node:IsA("Model") then
+					local hum = node:FindFirstChildOfClass("Humanoid")
+					if hum and hum.Health > 0 and not node:FindFirstChild("IsZombie") then
+						return part.Position
+					end
+				end
+				node = node.Parent
+			end
+		end
+	end
+	return nil
+end
+
 local function objectivePoint(me)
 	local cm = Workspace:FindFirstChild("CURRENT_MAP")
 	local map = cm and cm:GetChildren()[1]
@@ -1445,6 +1468,11 @@ local function objectivePoint(me)
 	if not info or not info.Task then return nil end
 
 	local folder = taskFolder(map, info.Task)
+
+	-- A person carrying an arrow outranks every other marker: that is the escort
+	-- target, and it is the only signal that works on every protect day.
+	local escort = vipFromArrows(map)
+	if escort then return escort, false end
 
 	local arrow = visibleArrow(map, me)
 	if arrow then return arrow, true end
