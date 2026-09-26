@@ -99,6 +99,14 @@ local DEFAULTS = {
 	AutoLeave = true,
 	AutoLeaveDelay = 3,
 	AutoLeaveForce = true,
+
+	FarmEnabled = false,
+	FarmAutoStart = true,
+	FarmAutoFight = true,
+	FarmStartDelay = 2,
+	FarmMaxLosses = 3,
+	FarmStopOnMoveTask = true,
+	FarmClaimTasks = true,
 }
 
 local EZ, Window
@@ -387,9 +395,12 @@ rayParams.FilterType = Enum.RaycastFilterType.Exclude
 local visCache = {}
 local VIS_TTL = 0.1
 
--- Everything that must not block the ray: the target's own proxy + visual, the
--- rest of the horde (their proxies are raycastable even though the visuals are
--- not), and the local character.
+-- The ray is aimed AT the target and the target is deliberately left hittable:
+-- whatever it hits first is the answer. If that is the target's own proxy or
+-- visual, the line is clear; if it is anything else, something got in the way.
+-- (Excluding the target instead and requiring an empty hit cannot work — the
+-- first thing the ray meets is the target itself, so every zombie reads as
+-- blocked, which is exactly how this first went wrong.)
 local function isVisible(e, worldPos)
 	local cam = Workspace.CurrentCamera
 	if not cam then return false end
@@ -398,6 +409,8 @@ local function isVisible(e, worldPos)
 	local now = os.clock()
 	if cached and cached.expires > now then return cached.value end
 
+	-- Everything that must not block the ray: the rest of the horde (their
+	-- proxies are raycastable even though the visuals are not) and my own body.
 	local filter = table.create(#zombieModels + 1)
 	for _, m in ipairs(zombieModels) do
 		if m ~= e.proxy and m ~= e.model then filter[#filter + 1] = m end
@@ -408,7 +421,16 @@ local function isVisible(e, worldPos)
 	rayParams.FilterDescendantsInstances = filter
 	local origin = cam.CFrame.Position
 	local hit = Workspace:Raycast(origin, worldPos - origin, rayParams)
-	local value = hit == nil
+
+	local value
+	if hit == nil then
+		value = true
+	elseif (e.proxy and hit.Instance:IsDescendantOf(e.proxy))
+		or (e.model and hit.Instance:IsDescendantOf(e.model)) then
+		value = true
+	else
+		value = false
+	end
 
 	visCache[e.id] = { value = value, expires = now + VIS_TTL }
 	return value
@@ -648,6 +670,321 @@ local function watchAutoLeave()
 end
 
 ----------------------------------------------------------------
+-- mission farm
+----------------------------------------------------------------
+
+-- The loop is driven entirely off state that is already observable, rather than
+-- off timers: HUD.Enabled means a mission is live, MainMenu.Enabled means the
+-- lobby is up, and an OK button means the run has ended. Stats.DAY only moves on
+-- a win, so comparing it either side of a run is the win/loss signal — no event
+-- needed, and it works in the boss raid too.
+--
+-- Starting a day is two steps in the game: MapUI's DAY button opens MissionUI,
+-- then its START button runs the day (which fires BeginDay:FireServer("DAYS")).
+-- This opens the panel the same way the button does, then presses START for real.
+local farm = {
+	state = "idle",
+	note = "",
+	runs = 0,
+	wins = 0,
+	losses = 0,
+	streak = 0,
+	lastDay = nil,      -- last day seen, for counting clears
+	dayAtStart = nil,   -- the day START was pressed for, for counting losses
+	enteredLobbyAt = nil,
+	armed = false,
+	halted = false,
+}
+
+-- These tasks ask the player to physically go somewhere — rescue a survivor,
+-- carry a supply back, restore power. Shooting everything does not finish them,
+-- so the farm stops rather than burning attempts on them.
+local MOVE_TASKS = { SOS = true, Resupply = true, Power = true }
+
+local dayCatalog
+do
+	local ok, mod = pcall(require, ReplicatedStorage:FindFirstChild("DAYS_Module"))
+	if ok and type(mod) == "table" then dayCatalog = mod end
+end
+
+local function currentDay()
+	local stats = LocalPlayer:FindFirstChild("Stats")
+	local day = stats and stats:FindFirstChild("DAY")
+	return day and day.Value or nil
+end
+
+local function dayInfo(day)
+	if not dayCatalog or not day then return nil end
+	return dayCatalog["DAY " .. tostring(day)]
+end
+
+local function inMission()
+	local hud = LocalPlayer.PlayerGui:FindFirstChild("HUD")
+	return hud ~= nil and hud.Enabled
+end
+
+local function findStartButton()
+	local pg = LocalPlayer.PlayerGui
+	local menu = pg:FindFirstChild("MainMenu")
+	local main = menu and menu:FindFirstChild("MainFrame")
+	local panel = main and main:FindFirstChild("MissionUI")
+	local frame = panel and panel:FindFirstChild("Frame")
+	local btn = frame and frame:FindFirstChild("StartButton")
+	if btn and isShowing(btn) and btn.AbsoluteSize.X >= 40 and btn.AbsoluteSize.Y >= 20 then
+		return btn
+	end
+	return nil
+end
+
+-- Same two assignments MapUI's DAY button makes, minus its sounds and tweens.
+local function openMissionPanel()
+	local pg = LocalPlayer.PlayerGui
+	local menu = pg:FindFirstChild("MainMenu")
+	local main = menu and menu:FindFirstChild("MainFrame")
+	if not main then return false end
+
+	local panel = main:FindFirstChild("MissionUI")
+	if not panel then return false end
+
+	pcall(function()
+		local current = main:FindFirstChild("CurrentUI")
+		if current then current.Value = "MissionUI" end
+		panel.Visible = true
+	end)
+	return true
+end
+
+local function setFarmHalted(reason)
+	farm.halted = true
+	farm.state = "halted"
+	farm.note = reason
+	if EZ then
+		EZ:Notify({ Title = "Farm stopped", Content = reason, Duration = 8, Type = "warning" })
+	end
+end
+
+local function watchFarm()
+	if not flag("FarmEnabled") then
+		farm.state, farm.note = "idle", "off"
+		farm.enteredLobbyAt = nil
+		farm.dayAtStart = nil
+		farm.armed = false
+		return
+	end
+
+	-- First tick after being switched on: start counting from wherever the game
+	-- already is, so days cleared without this instance pressing START still
+	-- register. It also clears a previous halt, which is what the stop message
+	-- tells you to do.
+	if not farm.armed then
+		farm.armed = true
+		farm.halted = false
+		farm.lastDay = currentDay()
+		farm.dayAtStart = nil
+		farm.enteredLobbyAt = nil
+	end
+
+	if farm.halted then return end
+
+	local pg = LocalPlayer.PlayerGui
+	local menu = pg:FindFirstChild("MainMenu")
+	local lobby = menu ~= nil and menu.Enabled
+
+	if findOkButton() ~= nil then
+		farm.state = "ending"
+		farm.note = "run over — auto leave is clearing it"
+		return
+	end
+
+	-- A clear is simply the day moving on, and the game chains days by itself
+	-- once a run finishes — it does not always pass through the lobby between
+	-- them. So this is checked before the in-mission return, not after it:
+	-- waiting for the lobby is how the first version managed to clear two days
+	-- and count neither.
+	local day = currentDay()
+	if farm.lastDay ~= nil and day ~= nil and day ~= farm.lastDay then
+		farm.wins = farm.wins + 1
+		farm.streak = 0
+		farm.note = ("DAY %s cleared"):format(tostring(farm.lastDay))
+		farm.lastDay = day
+		-- The day we pressed START for has moved on, so it is no longer a
+		-- candidate for the "came back unadvanced" loss below.
+		if farm.dayAtStart ~= nil and farm.dayAtStart ~= day then
+			farm.dayAtStart = nil
+		end
+		farm.enteredLobbyAt = nil
+	end
+
+	if inMission() then
+		farm.state = "playing"
+		local info = dayInfo(day)
+		farm.note = ("playing DAY %s%s"):format(
+			tostring(day), info and (" (" .. tostring(info.Task) .. ")") or "")
+		farm.enteredLobbyAt = nil
+		return
+	end
+
+	if not lobby then
+		farm.state = "waiting"
+		farm.note = "waiting for the lobby"
+		return
+	end
+
+	-- Back in the lobby with the day we started still in place: that run did not
+	-- clear. Only checked against a day this farm actually pressed START for, so
+	-- a day cleared by the game's own chaining can never be counted as a loss.
+	if farm.dayAtStart ~= nil and day == farm.dayAtStart then
+		if farm.enteredLobbyAt == nil then
+			farm.enteredLobbyAt = os.clock()
+		elseif os.clock() - farm.enteredLobbyAt > 5 then
+			farm.losses = farm.losses + 1
+			farm.streak = farm.streak + 1
+			farm.note = ("DAY %s did not clear"):format(tostring(day))
+			farm.dayAtStart = nil
+			farm.enteredLobbyAt = nil
+			if farm.streak >= flag("FarmMaxLosses") then
+				setFarmHalted(("%d runs in a row did not clear — stopping. Re-enable to retry."):format(farm.streak))
+				return
+			end
+		end
+	end
+
+	local info = dayInfo(day)
+	if flag("FarmStopOnMoveTask") and info and MOVE_TASKS[info.Task] then
+		setFarmHalted(("DAY %s is a %s task — it needs you to move to the objective, so it cannot be farmed unattended.")
+			:format(tostring(day), tostring(info.Task)))
+		return
+	end
+
+	if not flag("FarmAutoStart") then
+		farm.state, farm.note = "idle", "auto start is off"
+		return
+	end
+
+	-- Let the lobby settle before reaching for the button, so the menu's own
+	-- busy flag is clear and the press is not swallowed.
+	if farm.enteredLobbyAt == nil then
+		farm.enteredLobbyAt = os.clock()
+		farm.state, farm.note = "waiting", "letting the lobby settle"
+		return
+	end
+	if os.clock() - farm.enteredLobbyAt < flag("FarmStartDelay") then
+		farm.state = "waiting"
+		farm.note = ("starting in %.1fs"):format(flag("FarmStartDelay") - (os.clock() - farm.enteredLobbyAt))
+		return
+	end
+
+	local btn = findStartButton()
+	if not btn then
+		if not openMissionPanel() then
+			farm.state, farm.note = "paused", "no mission panel in this place"
+			return
+		end
+		farm.state, farm.note = "starting", "opening the mission panel"
+		return
+	end
+
+	farm.dayAtStart = day
+	farm.runs = farm.runs + 1
+	farm.state = "starting"
+	farm.note = ("pressed START for DAY %s"):format(tostring(day))
+	farm.enteredLobbyAt = nil
+	clickButton(btn)
+end
+
+----------------------------------------------------------------
+-- challenge auto-claim
+----------------------------------------------------------------
+
+-- TaskManager's Hourly/Daily/Weekly/Monthly challenges each carry Completed and
+-- Claimed booleans, so a completed-but-unclaimed entry is a reward sitting there
+-- uncollected. ClaimTask takes the category name and the task's slot.
+local CLAIM_CATEGORIES = { "Hourly", "Daily", "Weekly", "Monthly" }
+local claims = { last = 0, total = 0, note = "idle" }
+
+local function claimFinishedTasks()
+	local tm = ReplicatedStorage:FindFirstChild("Modules")
+	local manager = tm and tm:FindFirstChild("TaskManager")
+	local remotes = manager and manager:FindFirstChild("Remotes")
+	if not remotes then return 0, "no TaskManager" end
+
+	local getTasks = remotes:FindFirstChild("GetTasks")
+	local claimTask = remotes:FindFirstChild("ClaimTask")
+	local claimMilestone = remotes:FindFirstChild("ClaimStarMilestone")
+	if not (getTasks and claimTask) then return 0, "no claim remotes" end
+
+	local ok, data = pcall(function() return getTasks:InvokeServer() end)
+	if not ok or type(data) ~= "table" then return 0, "GetTasks failed" end
+
+	local claimed = 0
+
+	local categories = data.Categories
+	if type(categories) == "table" then
+		for _, name in ipairs(CLAIM_CATEGORIES) do
+			local bucket = categories[name]
+			local list = type(bucket) == "table" and bucket.Tasks or nil
+			if type(list) == "table" then
+				for slot, task in pairs(list) do
+					if type(task) == "table" and task.Completed == true and task.Claimed ~= true then
+						local ok2 = pcall(function()
+							return claimTask:InvokeServer(name, task.Slot or slot)
+						end)
+						if ok2 then claimed = claimed + 1 end
+					end
+				end
+			end
+		end
+	end
+
+	-- Star roadmap milestones are keyed by their Stars threshold, not an index —
+	-- confirmed against the server: ClaimStarMilestone(3) answers "Not enough
+	-- Stars.", while an index or the cycle key answers "Invalid milestone.".
+	local roadmap = data.StarRoadmap
+	if claimMilestone and type(roadmap) == "table" and type(roadmap.Milestones) == "table" then
+		local stars = tonumber(roadmap.Stars) or 0
+
+		-- The claimed list may be an array of thresholds or a map of them.
+		local done = {}
+		for k, v in pairs(roadmap.ClaimedMilestones or {}) do
+			if type(k) == "number" then done[k] = true end
+			if type(v) == "number" then done[v] = true end
+		end
+
+		for _, milestone in pairs(roadmap.Milestones) do
+			local need = type(milestone) == "table" and tonumber(milestone.Stars)
+			if need and stars >= need and not done[need] then
+				local ok3 = pcall(function() return claimMilestone:InvokeServer(need) end)
+				if ok3 then claimed = claimed + 1 end
+			end
+		end
+	end
+
+	return claimed
+end
+
+local function watchClaims()
+	if not flag("FarmClaimTasks") then
+		claims.note = "off"
+		return
+	end
+	if os.clock() - claims.last < 60 then return end
+	claims.last = os.clock()
+
+	local claimed, err = claimFinishedTasks()
+	if err then
+		claims.note = err
+		return
+	end
+	if claimed > 0 then
+		claims.total = claims.total + claimed
+		if EZ then
+			EZ:Notify({ Title = "Challenges claimed", Content = claimed .. " reward(s) collected", Type = "success" })
+		end
+	end
+	claims.note = ("%d claimed this session"):format(claims.total)
+end
+
+----------------------------------------------------------------
 -- per-frame work
 ----------------------------------------------------------------
 
@@ -865,7 +1202,12 @@ local function renderAim()
 	local vp = cam.ViewportSize
 	local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
 
-	local enabled = flag("AimEnabled")
+	-- Auto fight: while the farm is driving a live mission it holds the aim key
+	-- down for you, so combat needs no input at all. It also stands in for the
+	-- aimbot's own toggle — asking someone to switch on two things to get one
+	-- behaviour is a trap.
+	local autoFight = flag("FarmEnabled") and flag("FarmAutoFight") and not farm.halted and inMission()
+	local enabled = flag("AimEnabled") or autoFight
 
 	if fovCircle then
 		if enabled and flag("ShowFov") then
@@ -883,7 +1225,8 @@ local function renderAim()
 	stats.locked = nil
 	if not enabled then return end
 
-	local active = aimKeyHandle and aimKeyHandle:IsActive()
+	local active = autoFight
+		or (aimKeyHandle and aimKeyHandle:IsActive())
 		or (aimKeyHandle == nil and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
 	if not active then return end
 
@@ -922,9 +1265,34 @@ local function renderAim()
 	if best then
 		stats.locked = best.ztype
 		aimCameraAt(cam, bestPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
-		if flag("Triggerbot") then
+		if flag("Triggerbot") or autoFight then
 			fireTriggerbot(math.floor(center.X), math.floor(center.Y))
 		end
+		return
+	end
+
+	-- Nothing in the cone. Unattended that is a dead end: zombies arriving from
+	-- behind never enter the view, so the run would just stand there. Turn
+	-- toward the nearest one instead and it walks into the cone by itself.
+	if not autoFight then return end
+
+	local turnPos, turnDist
+	for _, e in pairs(Entities) do
+		if e.alive then
+			local part = aimPartFor(e)
+			local pos = part and part.Position
+			if pos then
+				local d = (camPos - pos).Magnitude
+				if d <= maxDist and (turnDist == nil or d < turnDist) then
+					turnDist, turnPos = d, pos
+				end
+			end
+		end
+	end
+
+	if turnPos then
+		stats.locked = "(turning)"
+		aimCameraAt(cam, turnPos, math.clamp(flag("AimSpeed") / 100, 0.01, 1))
 	end
 end
 
@@ -966,6 +1334,8 @@ end
 
 local statusLabel
 local autoLeaveLabel
+local farmLabel
+local farmToggleHandle
 
 do
 	local ok, lib = pcall(function()
@@ -1223,6 +1593,77 @@ do
 				.. "flag stale so the rewards screen may stop appearing until you press OK by hand once.",
 		})
 
+		local farmTab = Window:AddTab("Farm", "repeat")
+		local farmBox = farmTab:AddLeftGroupbox("Auto farm", "sprout")
+		farmToggleHandle = farmBox:AddToggle("FarmEnabled", {
+			Text = "Farm missions on repeat",
+			Default = DEFAULTS.FarmEnabled,
+			Tooltip = "Start the current day, fight it, let auto leave clear the result, then start the "
+				.. "next one. Runs off the lobby/mission state the game already exposes, so it does not "
+				.. "care which map or day you are on.",
+		})
+		farmBox:AddToggle("FarmAutoStart", {
+			Text = "Start the next mission",
+			Default = DEFAULTS.FarmAutoStart,
+			VisibleWhen = "FarmEnabled",
+			Tooltip = "Opens the mission panel and presses START. Off = it will only play, never start.",
+		})
+		farmBox:AddToggle("FarmAutoFight", {
+			Text = "Fight for me",
+			Default = DEFAULTS.FarmAutoFight,
+			VisibleWhen = "FarmEnabled",
+			Tooltip = "Holds the aim key down for the whole mission and fires whenever a zombie is "
+				.. "locked, so nothing needs pressing.",
+		})
+		farmBox:AddSlider("FarmStartDelay", {
+			Text = "Wait before starting",
+			Min = 0, Max = 15, Increment = 0.5, Default = DEFAULTS.FarmStartDelay, Suffix = " s",
+			VisibleWhen = "FarmEnabled",
+			Tooltip = "Lets the lobby settle first — the menu ignores clicks while it is still animating.",
+		})
+		farmBox:AddSlider("FarmMaxLosses", {
+			Text = "Stop after",
+			Min = 1, Max = 20, Increment = 1, Default = DEFAULTS.FarmMaxLosses, Suffix = " losses",
+			VisibleWhen = "FarmEnabled",
+			Tooltip = "Consecutive runs that do not clear the day. Guards against burning attempts on a "
+				.. "day the bot cannot finish.",
+		})
+		farmBox:AddToggle("FarmStopOnMoveTask", {
+			Text = "Stop on days that need you to move",
+			Default = DEFAULTS.FarmStopOnMoveTask,
+			VisibleWhen = "FarmEnabled",
+			Tooltip = "SOS, Resupply and Power ask you to reach a survivor, carry a supply back or "
+				.. "restore power. Shooting cannot finish those, so the farm stops with a note instead "
+				.. "of failing over and over.",
+		})
+		farmBox:AddToggle("FarmClaimTasks", {
+			Text = "Claim finished challenges",
+			Default = DEFAULTS.FarmClaimTasks,
+			Tooltip = "Checks the Hourly / Daily / Weekly / Monthly challenges once a minute and claims "
+				.. "any that are complete but uncollected.",
+		})
+		farmLabel = farmBox:AddLabel("Farm: idle")
+
+		local farmHowBox = farmTab:AddRightGroupbox("What it does and does not do", "list-checks")
+		farmHowBox:AddParagraph({
+			Title = "State, not timers",
+			Content = "HUD.Enabled means a mission is live, MainMenu.Enabled means the lobby is up, an OK "
+				.. "button means the run ended, and Stats.DAY only moves on a win — so comparing it "
+				.. "either side of a run is the win/loss signal. No timing guesses anywhere.",
+		})
+		farmHowBox:AddParagraph({
+			Title = "Covers the combat days",
+			Content = "Normal, Boss, Tank, BloodMoon and Heartbeat — 52 of the 67 days — are cleared by "
+				.. "killing what spawns, which is what the aimbot does. The other 15 (SOS 7, Resupply 6, "
+				.. "Power 2) need you to walk somewhere.",
+		})
+		farmHowBox:AddParagraph({
+			Title = "Not covered: movement",
+			Content = "There is no walk-to-objective yet, so those 15 days will stop the farm rather "
+				.. "than loop on them. That is the next piece of work, and it needs watching a live SOS "
+				.. "or Resupply day to find where the objective is announced.",
+		})
+
 		local infoTab = Window:AddTab("Info", "info")
 		local howBox = infoTab:AddLeftGroupbox("How this reads the game", "scan-eye")
 		howBox:AddParagraph({
@@ -1298,6 +1739,10 @@ task.spawn(function()
 	while running do
 		local ok, err = pcall(watchAutoLeave)
 		if not ok then warn("[ComzESP] leave:", err) end
+		local ok2, err2 = pcall(watchFarm)
+		if not ok2 then warn("[ComzESP] farm:", err2) end
+		local ok3, err3 = pcall(watchClaims)
+		if not ok3 then warn("[ComzESP] claims:", err3) end
 		task.wait(0.5)
 	end
 end)
@@ -1321,6 +1766,12 @@ task.spawn(function()
 		end
 		if autoLeaveLabel then
 			pcall(function() autoLeaveLabel:Set("Auto leave: " .. autoLeave.last) end)
+		end
+		if farmLabel then
+			pcall(function()
+				farmLabel:Set(("Farm: %s | %s | runs %d, cleared %d, failed %d | claims: %s")
+					:format(farm.state, farm.note, farm.runs, farm.wins, farm.losses, claims.note))
+			end)
 		end
 	end
 end)
@@ -1388,6 +1839,9 @@ G.ComzESP = {
 	Entities = function() return Entities end,
 	Stats = function() return stats end,
 	AutoLeave = function() return autoLeave end,
+	Farm = function() return farm end,
+	Claims = function() return claims end,
+	FarmToggle = farmToggleHandle,
 	Flags = DEFAULTS,
 }
 
