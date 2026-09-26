@@ -21,6 +21,9 @@ jobs:
         run: |
           curl -sL -o globalTypes.d.luau https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/main/scripts/globalTypes.d.luau
 
+      - name: Check the hub's game list
+        run: bash tools/check-hub.sh
+
       - name: Analyze (fail on syntax errors and accidental globals)
         run: |
           out=$(./luau-lsp analyze \

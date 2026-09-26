@@ -125,7 +125,7 @@ local function buildEntryCard(scroll, entry, theme)
         ts.Position = UDim2.new(1, -28, 0, 4)
         ts.BackgroundTransparency = 1
         ts.Text = formatAge(entry.time)
-        ts.TextColor3 = theme.TextMuted
+        ts.TextColor3 = theme.TextDim
         ts.TextSize = 9
         ts.Font = Enum.Font.Gotham
         ts.TextXAlignment = Enum.TextXAlignment.Right
@@ -214,7 +214,7 @@ local function buildPanel(main, theme)
     clearBtn.BackgroundColor3 = theme.Surface
     clearBtn.BackgroundTransparency = 0.5
     clearBtn.Text = "Clear"
-    clearBtn.TextColor3 = theme.TextMuted
+    clearBtn.TextColor3 = theme.TextDim
     clearBtn.TextSize = 9
     clearBtn.Font = Enum.Font.GothamMedium
     clearBtn.BorderSizePixel = 0
@@ -270,7 +270,7 @@ local function buildPanel(main, theme)
     empty.Size = UDim2.new(1, 0, 0, 60)
     empty.BackgroundTransparency = 1
     empty.Text = "No notifications yet"
-    empty.TextColor3 = theme.TextMuted
+    empty.TextColor3 = theme.TextDim
     empty.TextSize = 11
     empty.Font = Enum.Font.Gotham
     empty.ZIndex = 5

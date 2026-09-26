@@ -57,40 +57,61 @@ local HUB = {
 	-- SOURCE = "https://ezhub-games.YOUR-SUBDOMAIN.workers.dev/",
 }
 
--- Every id below was checked against Roblox's own API, not guessed:
+-- One entry per game. Adding a game means adding ONE entry to this list: the
+-- two lookup tables and the catalog window below are derived from it, so they
+-- cannot drift apart. (They used to be three separate tables, which is exactly
+-- how a game ends up detectable but missing from the window, or vice versa.)
+--
+--   slug      filename in games/ minus .luau — also the EZHubForceGame value
+--   name      shown in the catalog window
+--   note      one line under the name
+--   universes game.GameId values. One entry covers every place in that game
+--             (lobby, match servers, event places), so it is usually enough.
+--   places    game.PlaceId values, for when a single place needs its own
+--             module or the universe list is not enough. PlaceId wins.
+--
+-- Every id must be checked against Roblox's own API, never guessed:
 --   https://games.roblox.com/v1/games?universeIds=<id>   -> name + rootPlaceId
--- game.GameId is the universe id, so one entry covers every place in that
--- universe (lobby, match servers, event places). game.PlaceId is the exact
--- place and wins when both match.
-
-local BY_PLACE = {
-	[131530256182298] = "total-conquest", -- Total Conquest — lobby
-	[121112783648487] = "total-conquest", -- Total Conquest — war match
-	[92964612950536]  = "counter-type",   -- Counter Type — main
-	[91221196478310]  = "counter-type",   -- Counter Type — war
-	[84605263710079]  = "slam-a-winner",  -- Slam A Winner
-	[79966250354565]  = "project-12",     -- Project 12 [BODY CAM!]
-	[109826671174115] = "levelmoba",      -- Starforged — alt place
+local GAMES = {
+	{
+		slug = "total-conquest", name = "Total Conquest", note = "autoplay",
+		universes = { 10591363798 },              -- LDS Fighting
+		places = { 131530256182298, 121112783648487 }, -- lobby, war match
+	},
+	{
+		slug = "counter-type", name = "Counter Type", note = "autoplay",
+		universes = { 10767575396 },              -- DomBlox Games
+		places = { 92964612950536, 91221196478310 },   -- main, war
+	},
+	{
+		slug = "slam-a-winner", name = "Slam A Winner", note = "autoplay",
+		universes = { 10766047255 },              -- UpdatesDev
+		places = { 84605263710079 },
+	},
+	{
+		slug = "project-12", name = "Project 12", note = "vehicle + combat",
+		universes = { 9286558970 },
+		places = { 79966250354565 },
+	},
+	{
+		slug = "bloxburg", name = "Bloxburg", note = "job farming",
+		universes = { 88070565 },
+	},
+	{
+		slug = "levelmoba", name = "Starforged", note = "aura suite",
+		universes = { 9410753415 },
+		places = { 109826671174115 },
+	},
 }
 
-local BY_GAME = {
-	[10591363798] = "total-conquest", -- [🤝] Total Conquest        (LDS Fighting)
-	[10767575396] = "counter-type",   -- Counter Type               (DomBlox Games)
-	[10766047255] = "slam-a-winner",  -- Slam A Winner              (UpdatesDev)
-	[9286558970]  = "project-12",     -- Project 12 [BODY CAM!]
-	[88070565]    = "bloxburg",       -- [🍂] Welcome to Bloxburg
-	[9410753415]  = "levelmoba",      -- Starforged [Early Access]
-}
+local BY_PLACE, BY_GAME = {}, {}
+for _, entry in ipairs(GAMES) do
+	for _, id in ipairs(entry.universes or {}) do BY_GAME[id] = entry.slug end
+	for _, id in ipairs(entry.places or {}) do BY_PLACE[id] = entry.slug end
+end
 
--- human-readable list for the "unsupported place" window, in menu order
-local CATALOG = {
-	{ slug = "total-conquest", name = "Total Conquest",     note = "autoplay" },
-	{ slug = "counter-type",   name = "Counter Type",       note = "autoplay" },
-	{ slug = "slam-a-winner",  name = "Slam A Winner",      note = "autoplay" },
-	{ slug = "project-12",     name = "Project 12",         note = "vehicle + combat" },
-	{ slug = "bloxburg",       name = "Bloxburg",           note = "job farming" },
-	{ slug = "levelmoba",      name = "Starforged",         note = "aura suite" },
-}
+-- what the "unsupported place" window lists, in the order above
+local CATALOG = GAMES
 
 local function fetchModule(slug)
 	local url = HUB.SOURCE .. slug .. ".luau"
