@@ -1568,11 +1568,16 @@ local function moveThink()
 
 	updateStuck(objDist)
 
-	-- Navigation. While a path waypoint is still a way off, the camera is aimed
-	-- along the path and W is held, which makes the walk straight. Once the last
-	-- leg is short the camera goes back to the aimbot and the steering below takes
-	-- over, so the run can shoot while it closes the final few studs.
-	local target = obj and navTarget(me, obj) or nil
+	-- Navigation. Markers that must be stood on skip pathfinding entirely: a path
+	-- ends at its final waypoint, which is several studs shy of the goal, and the
+	-- run would stop there and look like it had arrived — measured stopping 8.7
+	-- studs short of the arrow, standing in the ring rather than on it. The last
+	-- stretch is walked straight, with no standoff, so the marker is actually
+	-- entered. Pathfinding is only for long hauls around geometry.
+	local target
+	if not closeFully then
+		target = obj and navTarget(me, obj) or nil
+	end
 	if target then
 		local toTarget = Vector3.new(target.X - me.X, 0, target.Z - me.Z)
 		if toTarget.Magnitude > 15 then
@@ -1589,9 +1594,11 @@ local function moveThink()
 	end
 	move.travelling = false
 
-	-- The rotate heuristic is a fallback only. Applying it while a path exists
-	-- just fights the path and walks the run away from the objective.
-	if stuck.bias ~= 0 and not target then
+	-- The rotate heuristic is a fallback only, and never for a marker that has to
+	-- be stood on: circling an arrow is the one thing that cannot work, and it is
+	-- exactly what happened — the run orbited at 9 studs, the "no progress" check
+	-- kept re-rotating the heading, and it never walked in.
+	if stuck.bias ~= 0 and not target and not closeFully and (objDist or 0) > 20 then
 		desired = rotateY(desired, stuck.bias)
 		note = (note and (note .. " + ") or "") .. "detouring"
 	end
