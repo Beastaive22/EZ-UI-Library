@@ -47,7 +47,22 @@ local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local Workspace = game:GetService("Workspace")
 
+-- queue_on_teleport runs this code the moment the new place loads, which is
+-- before the player object exists: LocalPlayer is nil there, and everything below
+-- assumes it — it failed with "attempt to index nil with 'CharacterAdded'" and the
+-- module never armed, so the farm died at the first hop. Wait for it. The loader
+-- one-liner usually gets away with this because the HTTP fetch takes long enough
+-- for the player to appear; loading off disk does not.
 local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+	for _ = 1, 100 do
+		task.wait(0.1)
+		LocalPlayer = Players.LocalPlayer
+		if LocalPlayer then break end
+	end
+end
+if not LocalPlayer then return end
+
 local G = getgenv()
 
 -- A previous injection owns render-step bindings and Drawing objects; drop it
@@ -235,6 +250,10 @@ local DEFAULTS = {
 	MoveFleeHealth = 35,
 	MoveDodgeRadius = 30,
 	MoveHazardRadius = 10,
+	-- Kiting dies in a corner: once the horde has you in one there is no heading
+	-- left that gains ground, so headings back toward the middle of the map get a
+	-- small bonus.
+	MoveAvoidCorners = true,
 
 	-- Presses the game's own side-ability button. OFF BY DEFAULT because testing
 	-- could not get it to fire: the button's handler bails out unless the ability's
@@ -913,6 +932,10 @@ end
 
 -- Looks only inside the two known containers, so a stray "OK" somewhere else
 -- (a purchase confirmation, say) can never be pressed by mistake.
+--
+-- Returns which container it matched as well, because the two need different
+-- treatment: a result frame is the end of a run whatever the HUD is doing, while
+-- MissionComplete can be up while the run is still live.
 local function findOkButton()
 	local pg = LocalPlayer.PlayerGui
 	for _, path in ipairs(OK_CONTAINERS) do
@@ -921,14 +944,15 @@ local function findOkButton()
 			node = node and node:FindFirstChild(part)
 		end
 		if isShowing(node) then
+			local which = path[#path]
 			for _, d in ipairs(node:GetDescendants()) do
 				if (d:IsA("TextButton") or d:IsA("ImageButton"))
 					and isShowing(d) and d.AbsoluteSize.X >= 40 and d.AbsoluteSize.Y >= 20 then
-					if buttonLabel(d):gsub("%s", ""):upper() == "OK" then return d end
+					if buttonLabel(d):gsub("%s", ""):upper() == "OK" then return d, which end
 				end
 			end
 			local close = node:FindFirstChild("CloseButton", true)
-			if close and isShowing(close) then return close end
+			if close and isShowing(close) then return close, which end
 		end
 	end
 	return nil
@@ -990,20 +1014,25 @@ local function watchAutoLeave()
 		return
 	end
 
-	local btn = findOkButton()
+	local btn, container = findOkButton()
 	if not btn then
 		autoLeave.seenAt, autoLeave.clicked = nil, false
 		autoLeave.last = "watching for the OK button"
 		return
 	end
 
-	-- Never press it mid-run: the HUD being up means a mission is live and this
-	-- button is not an end-of-run one.
-	local hud = LocalPlayer.PlayerGui:FindFirstChild("HUD")
-	if hud and hud.Enabled then
-		autoLeave.seenAt, autoLeave.clicked = nil, false
-		autoLeave.last = "in a match"
-		return
+	-- Never press it mid-run — but only for a mission. A result frame is the end of
+	-- a run whatever the HUD is doing, and in survival it genuinely is still up
+	-- while the result shows: measured on a live client, HUD.Enabled was true with
+	-- MainMenu.ResultFrame visible, and the guard below then refused to press
+	-- forever. That is a wedged farm, not a safety check.
+	if container ~= "ResultFrame" then
+		local hud = LocalPlayer.PlayerGui:FindFirstChild("HUD")
+		if hud and hud.Enabled then
+			autoLeave.seenAt, autoLeave.clicked = nil, false
+			autoLeave.last = "in a match"
+			return
+		end
 	end
 
 	local now = os.clock()
@@ -1832,35 +1861,29 @@ local function hazardParts()
 	return found
 end
 
--- Radial push away from a hazard's centre — the right answer for a blob on the
--- floor, where stepping off it matters more than which way.
-local function groundHazardPush(me, radius)
-	local push = Vector3.zero
+-- Everything that can hurt to walk through: the map's own named hazard parts,
+-- plus whatever the client spawns into ClientZombieEffects (acid, puddles) and
+-- ClientZombieProjectiles. Collected as positions for the heading scorer to
+-- weigh, rather than pushed out of radially.
+local function hazardPoints(radius, me)
+	local out = {}
+
+	for _, part in ipairs(hazardParts()) do
+		if part.Parent then out[#out + 1] = part.Position end
+	end
+
 	for _, folderName in ipairs({ "ClientZombieEffects", "ClientZombieProjectiles" }) do
 		local folder = Workspace:FindFirstChild(folderName)
 		if folder then
 			for _, obj in ipairs(folder:GetChildren()) do
 				local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
-				if part then
-					local away = me - part.Position
-					local dist = away.Magnitude
-					if dist > 0.01 and dist < radius then
-						push = push + away.Unit * ((radius - dist) / radius)
-					end
+				if part and (part.Position - me).Magnitude < radius * 2 then
+					out[#out + 1] = part.Position
 				end
 			end
 		end
 	end
-	for _, part in ipairs(hazardParts()) do
-		if part.Parent then
-			local away = me - part.Position
-			local dist = away.Magnitude
-			if dist > 0.01 and dist < radius then
-				push = push + away.Unit * ((radius - dist) / radius)
-			end
-		end
-	end
-	return push
+	return out
 end
 
 local stuck = { bestDist = nil, since = 0, bias = 0, cycles = 0 }
@@ -1947,69 +1970,12 @@ local function myBody()
 	return nil
 end
 
--- Repulsion from zombies that are inside the keep-out ring.
-local function crowdPush(me, keep)
-	local push = Vector3.zero
-	for _, e in pairs(Entities) do
-		if e.alive and e.root and e.root.Parent then
-			local away = me - e.root.Position
-			local dist = away.Magnitude
-			if dist > 0.01 and dist < keep then
-				push = push + away.Unit * ((keep - dist) / keep)
-			end
-		end
-	end
-	return push
-end
-
--- Incoming projectiles: step perpendicular to their travel, to whichever side is
--- closer to where we already want to go.
---
--- Travel is read from position history, not AssemblyLinearVelocity: this game
--- moves things by setting CFrames (the zombie visuals are anchored), so a
--- physics velocity is frequently zero — which silently ignored every spitter
--- projectile and is why nothing was ever dodged.
+-- Incoming projectiles: the heading scorer reads their travel from position
+-- history, not AssemblyLinearVelocity. This game moves things by setting CFrames
+-- (the zombie visuals are anchored), so a physics velocity is frequently zero —
+-- which silently ignored every spitter projectile and is why nothing was ever
+-- dodged before.
 local projHistory = setmetatable({}, { __mode = "k" })
-
-local function dodgePush(me, radius, bias)
-	local folder = Workspace:FindFirstChild("ClientZombieProjectiles")
-	if not folder then return Vector3.zero end
-
-	local now = os.clock()
-	local push = Vector3.zero
-
-	for _, proj in ipairs(folder:GetChildren()) do
-		local part = proj:IsA("BasePart") and proj or proj:FindFirstChildWhichIsA("BasePart")
-		if part then
-			local pos = part.Position
-			local prev = projHistory[part]
-			projHistory[part] = { pos = pos, at = now }
-
-			local toMe = me - pos
-			local dist = toMe.Magnitude
-			if dist > 0.01 and dist < radius then
-				local travel
-				if prev and now - prev.at < 0.5 then
-					travel = pos - prev.pos
-				else
-					travel = part.AssemblyLinearVelocity * 0.05
-				end
-
-				-- 0.2 rather than a strict head-on test: a blob on a shallow
-				-- angle still hurts, and stepping aside early is cheap.
-				if travel.Magnitude > 0.05 and travel.Unit:Dot(toMe.Unit) > 0.2 then
-					local side = travel.Unit:Cross(Vector3.new(0, 1, 0))
-					if side.Magnitude > 0.01 then
-						side = side.Unit
-						if bias and side:Dot(bias) < 0 then side = -side end
-						push = push + side * ((radius - dist) / radius)
-					end
-				end
-			end
-		end
-	end
-	return push
-end
 
 -- The map carries a folder named after the day's task holding that task's
 -- waypoints — but the folder is upper-case ("RESUPPLY") while DAYS_Module's task
@@ -2250,6 +2216,209 @@ local function objectivePoint(me)
 	return visible, visible ~= nil
 end
 
+----------------------------------------------------------------
+-- heading choice: score a ring, commit, re-decide
+----------------------------------------------------------------
+
+-- The old movement added an objective pull, a crowd push, a dodge push and a
+-- hazard push together and then rounded the sum into WASD, twenty times a second.
+-- Four competing forces re-decided every tick and quantised to the nearest 22.5
+-- degrees is how you get oscillation — measured runs went 136 -> 61 -> 107 studs
+-- and never converged — and in survival it is how you stand still in the wave
+-- until you die.
+--
+-- Instead: score a ring of candidate headings on what actually happens over the
+-- next fraction of a second, take the best, and hold it for a moment.
+--
+-- Two things make the scoring honest. The old dodge tested "is something near",
+-- which fires for shots that were never going to hit; this tests the closest
+-- approach along the path, so a threat only counts if the path is actually hit.
+-- And because it compares paths rather than pushing on the current position, a
+-- zombie charging at you counts the same as you walking into it.
+local KITE_DIRECTIONS = 16
+local KITE_COMMIT = 0.3     -- seconds a chosen heading is held before re-deciding
+local KITE_HORIZON = 0.9    -- seconds of danger each heading is scored against
+local KITE_SPEED = 16       -- studs/s the character manages, for prediction
+
+local kite = { dir = nil, at = 0, note = "" }
+local kiteParams = RaycastParams.new()
+kiteParams.FilterType = Enum.RaycastFilterType.Exclude
+local kiteFilter = {}
+
+local mapCentre, mapCentreAt = nil, 0
+
+-- Rough middle of the play area, for the corner bias. Corners are where kiting
+-- dies: once the horde has you in one there is no heading left that gains space.
+local function mapCentrePoint()
+	local now = os.clock()
+	if mapCentre and now - mapCentreAt < 10 then return mapCentre end
+	mapCentreAt = now
+
+	local cm = Workspace:FindFirstChild("CURRENT_MAP")
+	local map = cm and cm:GetChildren()[1]
+	if not map then
+		mapCentre = nil
+		return nil
+	end
+	local ok, cf = pcall(function() return map:GetBoundingBox() end)
+	if not ok or typeof(cf) ~= "CFrame" then
+		mapCentre = nil
+		return nil
+	end
+	mapCentre = cf.Position
+	return mapCentre
+end
+
+-- Closest the path comes to a threat that is itself moving, over the horizon.
+local function closestApproach(me, dir, p, vel)
+	local rel = vel - dir * KITE_SPEED
+	local to = p - me
+	local t = 0
+	local denom = rel:Dot(rel)
+	if denom > 0.0001 then
+		t = math.clamp(to:Dot(rel) / denom, 0, KITE_HORIZON)
+	end
+	local us = me + dir * (KITE_SPEED * t)
+	local them = p + vel * t
+	return (us - them).Magnitude, t
+end
+
+-- How far the heading stays clear, from chest height so a kerb is not a wall.
+local function clearDistance(me, dir)
+	kiteParams.FilterDescendantsInstances = kiteFilter
+	local origin = me + Vector3.new(0, 2.5, 0)
+	local reach = KITE_SPEED * KITE_HORIZON
+	local hit = Workspace:Raycast(origin, dir * reach, kiteParams)
+	return hit and hit.Distance or reach
+end
+
+local function chooseHeading(me, objDir, flee)
+	local now = os.clock()
+	local keep = flag("MoveKeepDistance")
+	local hazardRadius = flag("MoveHazardRadius")
+
+	-- A committed heading is held, unless something has got right on top of us —
+	-- then it is worth throwing the decision away and re-scoring immediately.
+	if kite.dir and now - kite.at < KITE_COMMIT then
+		local pressed = false
+		for _, e in pairs(Entities) do
+			local proxy = e.proxy
+			local part = proxy and proxy.Parent
+				and (proxy:FindFirstChild("Head") or proxy:FindFirstChild("Torso"))
+			if e.alive and part and (part.Position - me).Magnitude < keep * 0.5 then
+				pressed = true
+				break
+			end
+		end
+		if not pressed then return kite.dir, kite.note end
+	end
+
+	-- Build the threat lists once, not once per candidate.
+	local threats = {}
+	for _, e in pairs(Entities) do
+		local proxy = e.proxy
+		local part = proxy and proxy.Parent
+			and (proxy:FindFirstChild("Head") or proxy:FindFirstChild("Torso"))
+		if e.alive and part then
+			local pos = part.Position
+			if (pos - me).Magnitude < keep * 3 then
+				local rec = trackHistory[proxy]
+				threats[#threats + 1] = { pos = pos, vel = rec and rec.vel or Vector3.zero }
+			end
+		end
+	end
+
+	-- Travel from position history: this game moves projectiles by writing CFrames,
+	-- so AssemblyLinearVelocity is frequently zero and every dodge would be blind.
+	local projectiles = {}
+	local projFolder = Workspace:FindFirstChild("ClientZombieProjectiles")
+	if projFolder then
+		for _, proj in ipairs(projFolder:GetChildren()) do
+			local part = proj:IsA("BasePart") and proj or proj:FindFirstChildWhichIsA("BasePart")
+			if part then
+				local pos = part.Position
+				if (pos - me).Magnitude < keep * 2 then
+					local prev = projHistory[part]
+					local vel = Vector3.zero
+					local dt = prev and (now - prev.at) or 0
+					if prev and dt > 0.001 and dt < 0.5 then
+						vel = (pos - prev.pos) / dt
+					end
+					projectiles[#projectiles + 1] = { pos = pos, vel = vel }
+				end
+			end
+		end
+	end
+
+	local hazards = hazardPoints(hazardRadius, me)
+	local centre = flag("MoveAvoidCorners") and mapCentrePoint() or nil
+
+	kiteFilter[1] = LocalPlayer.Character
+	for i = 1, #zombieModels do kiteFilter[i + 1] = zombieModels[i] end
+	for i = #zombieModels + 2, #kiteFilter do kiteFilter[i] = nil end
+
+	local best, bestScore, bestWhy
+	for i = 0, KITE_DIRECTIONS - 1 do
+		local angle = (i / KITE_DIRECTIONS) * math.pi * 2
+		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+		local score, why = 0, nil
+
+		for _, t in ipairs(threats) do
+			local d = closestApproach(me, dir, t.pos, t.vel)
+			if d < keep then
+				score = score - (keep - d) * 3
+				why = why or "slipping the horde"
+			elseif d < keep * 2 then
+				score = score - (keep * 2 - d) * 0.5
+			end
+		end
+
+		for _, p in ipairs(projectiles) do
+			local d = closestApproach(me, dir, p.pos, p.vel)
+			if d < 4 then
+				score = score - (4 - d) * 8
+				why = "dodging"
+			end
+		end
+
+		if hazardRadius > 0 then
+			for _, hpos in ipairs(hazards) do
+				local d = closestApproach(me, dir, hpos, Vector3.zero)
+				if d < hazardRadius then
+					score = score - (hazardRadius - d) * 2
+					why = why or "off the hazard"
+				end
+			end
+		end
+
+		local reach = KITE_SPEED * KITE_HORIZON
+		local free = clearDistance(me, dir)
+		if free < reach then
+			score = score - (reach - free) * 0.35
+			why = why or "along the wall"
+		end
+
+		if centre then
+			local away = centre - me
+			if away.Magnitude > 1 then score = score + dir:Dot(away.Unit) * 0.6 end
+		end
+
+		if objDir then
+			-- The objective is a bias on this score, not a force fighting the
+			-- others; when hurt it stops mattering much.
+			score = score + dir:Dot(objDir) * (flee and 0.2 or 2.0)
+			if dir:Dot(objDir) > 0.7 then why = why or "to the objective" end
+		end
+
+		if not bestScore or score > bestScore then
+			bestScore, best, bestWhy = score, dir, why
+		end
+	end
+
+	kite.dir, kite.at, kite.note = best, now, bestWhy or "kiting"
+	return best, kite.note
+end
+
 local function moveThink()
 	-- Either farm can drive the character; both need a live match to do it in.
 	local autoMove = flag("MoveEnabled") and inMission() and (
@@ -2270,7 +2439,6 @@ local function moveThink()
 	end
 
 	local me = root.Position
-	local keep = flag("MoveKeepDistance")
 	local desired = Vector3.zero
 	local note = nil
 
@@ -2305,55 +2473,20 @@ local function moveThink()
 		end
 	end
 
-	-- 2. Stay off the horde — but only sideways, and never so hard that it
-	--    cancels the approach. A push that opposes the objective would simply
-	--    cancel it and leave the run hovering at a distance; walking around a
-	--    horde is what a player does, refusing to walk past it is not.
-	local push = crowdPush(me, keep)
-	if push.Magnitude > 0.001 then
-		if toObjDir then
-			local along = push:Dot(toObjDir)
-			if along < 0 then push = push - toObjDir * along end
-		end
-		local strength = math.min(1.2, push.Magnitude)
-		if pull > 0 then strength = math.min(strength, pull * 0.8) end
-		if strength > 0.001 then
-			desired = desired + push.Unit * strength
-			note = note and (note .. " + sidestep") or "sidestep"
-		end
-	end
-
-	-- 3. Sidestep anything flying at us, and step off anything on the floor.
-	--    A close projectile takes over the heading outright: adding it to the
-	--    objective pull leaves the run walking mostly forward into the hit, which
-	--    is why spit kept landing. Avoidance has to win while the hit is imminent.
-	local dodge = dodgePush(me, flag("MoveDodgeRadius"), desired.Magnitude > 0.001 and desired.Unit or nil)
-	if dodge.Magnitude > 0.001 then
-		if dodge.Magnitude > 0.6 then
-			desired = dodge.Unit * 3
-			note = "dodging"
-		else
-			desired = desired + dodge.Unit * 1.6
-			note = note and (note .. " + dodging") or "dodging"
-		end
-	end
-
-	local hazard = groundHazardPush(me, flag("MoveHazardRadius"))
-	if hazard.Magnitude > 0.001 then
-		-- Deliberately stronger than the objective pull: nothing on the floor is
-		-- worth standing in, and it is re-evaluated every tick so stepping out
-		-- only costs a moment.
-		desired = desired + hazard.Unit * math.min(3, hazard.Magnitude * 3)
-		note = note and (note .. " + hazard") or "avoiding hazard"
-	end
-
-	-- 4. Hurt badly: the objective can wait, put distance on first.
-	if hum.Health / math.max(hum.MaxHealth, 1) * 100 < flag("MoveFleeHealth") then
-		local flee = crowdPush(me, keep * 3)
-		if flee.Magnitude > 0.001 then
-			desired = desired + flee.Unit * 2
-			note = "fleeing"
-		end
+	-- 2. One decision, not four competing forces. The scorer below weighs the
+	--    horde, incoming fire, floor hazards, walls, the map centre and the
+	--    objective together against each candidate heading, and the one it returns
+	--    is held for a moment instead of being re-made twenty times a second.
+	--
+	--    It replaces the old objective pull + crowd push + dodge push + hazard push
+	--    entirely: those were summed and then rounded into WASD, which is what made
+	--    it orbit, oscillate, and in survival stand still until it died.
+	local flee = hum.Health / math.max(hum.MaxHealth, 1) * 100 < flag("MoveFleeHealth")
+	local heading, why = chooseHeading(me, toObjDir, flee)
+	if heading then
+		desired = heading
+		note = why
+		if flee then note = note .. " + hurt" end
 	end
 
 	if desired.Magnitude < 0.001 then
@@ -3306,6 +3439,13 @@ do
 			Min = 0, Max = 40, Increment = 1, Default = DEFAULTS.MoveHazardRadius, Suffix = " st",
 			Tooltip = "Acid, puddles, anything named as a danger zone, and whatever the client spawns into "
 				.. "ClientZombieEffects — it walks out of these. Set 0 to ignore them.",
+		})
+		moveBox:AddToggle("MoveAvoidCorners", {
+			Text = "Steer away from corners",
+			Default = DEFAULTS.MoveAvoidCorners,
+			Tooltip = "Headings back toward the middle of the map get a small bonus. Kiting dies in a "
+				.. "corner: once the horde has you in one there is no heading left that gains ground, so "
+				.. "this is what stops it backing itself into scenery.",
 		})
 		moveLabel = moveBox:AddLabel("Move: idle")
 
