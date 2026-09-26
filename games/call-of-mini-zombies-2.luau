@@ -431,7 +431,12 @@ local function isVisible(e, worldPos)
 
 	local value
 	if hit == nil then
-		value = true
+		-- A ray that reaches the target's position without touching anything is
+		-- not a clear shot, it is a sign the aim point is not on a real hitbox —
+		-- the zombie's own proxy parts are CanQuery = true, so a genuine line of
+		-- sight always hits one of them. Treating this as visible is what let the
+		-- aimbot lock targets it had no business shooting at.
+		value = false
 	elseif (e.proxy and hit.Instance:IsDescendantOf(e.proxy))
 		or (e.model and hit.Instance:IsDescendantOf(e.model)) then
 		value = true
@@ -1800,6 +1805,12 @@ local function renderAim()
 
 	if best then
 		stats.locked = best.ztype
+		-- Surfaced in the status line so it is visible what is being aimed at:
+		-- the proxy Head is the hittable head (CanQuery = true) and sits ~1.2
+		-- studs from the rendered one, so a crosshair that looks slightly off the
+		-- mesh is still on the head hitbox.
+		local part = aimPartFor(best)
+		stats.aimPart = part and part.Name or "?"
 		-- While the movement is on a long haul it owns the camera, or the two
 		-- would fight and the walk would curve.
 		if not move.travelling then
@@ -2352,8 +2363,8 @@ task.spawn(function()
 		task.wait(1)
 		if statusLabel then
 			pcall(function()
-				statusLabel:Set(("Tracked %d | on screen %d | aiming %s")
-					:format(stats.tracked, stats.onScreen, stats.locked or "—"))
+				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s")
+					:format(stats.tracked, stats.onScreen, stats.locked or "—", stats.aimPart or "—"))
 			end)
 		end
 		if autoLeaveLabel then
