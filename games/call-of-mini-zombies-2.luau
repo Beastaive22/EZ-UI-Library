@@ -92,13 +92,21 @@ local DEFAULTS = {
 	AimDistance = 300,
 	AimPart = "Head",
 	AimVisibleOnly = true,
-	AimPriority = "Crosshair",
+	-- Nearest by distance, not nearest to the crosshair: the crosshair rule was
+	-- default and it kept picking whatever happened to sit under the reticle,
+	-- including something far away, while a zombie was already on top of the run.
+	AimPriority = "Nearest",
 	Triggerbot = false,
 	TriggerCps = 12,
 
 	AutoLeave = true,
 	AutoLeaveDelay = 3,
-	AutoLeaveForce = true,
+	-- Off by default. The fallback fires exactly when the game's own OK handler
+	-- has already wedged, and then mutates more game state on top of it
+	-- (BeginTutorial, ResetMenu, hiding the screen) — which races that handler
+	-- rather than repairing it. Pressing OK is what a player does; anything
+	-- beyond that is the script guessing at the game's internals.
+	AutoLeaveForce = false,
 
 	FarmEnabled = false,
 	FarmAutoStart = true,
@@ -112,7 +120,7 @@ local DEFAULTS = {
 	MoveKeepDistance = 26,
 	MoveStandoff = 10,
 	MoveFleeHealth = 35,
-	MoveDodgeRadius = 18,
+	MoveDodgeRadius = 30,
 	MoveHazardRadius = 10,
 }
 
