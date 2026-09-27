@@ -232,10 +232,11 @@ local DEFAULTS = {
 	-- degrees, so anything that relies on hitting will do worse. Off by default
 	-- because the camera axis is where the bullets actually go.
 	AimFollowCrosshair = false,
-	-- Extra lift applied inside the head hitbox, as a percentage of its half
-	-- height. 0 aims at the point nearest the rendered head; positive moves it up
-	-- toward the crown. Only ever moves the aim point inside the hitbox, so it
-	-- cannot cost the hit.
+	-- Extra lift applied on the head, as a percentage of its half height. 0 aims at
+	-- the point nearest the rendered head; positive moves it up toward the crown.
+	-- Up to 90 it stays inside the hitbox and the hit is guaranteed; past that it is
+	-- deliberately above the head, which is allowed because the gun resolves hits
+	-- with a 2.5-stud region rather than a ray. Slider goes to 150.
 	--
 	-- Defaults to 70 because of what the game actually credits. Hooking
 	-- ReplicatedStorage.Remotes.InflictTarget — the gun sends the part it hit and
@@ -778,16 +779,25 @@ local function aimBasePoint(part, visualHead)
 		math.clamp(offset.Z, -(half.Z - margin), half.Z - margin))
 
 	local out = pos + part.CFrame:VectorToWorldSpace(clamped)
-	-- AimHeightBias then lifts it up to half a head, for anyone who wants the
-	-- crosshair on the crown rather than the middle. Still interior, still a hit.
-	local bias = math.clamp((tonumber(flag("AimHeightBias")) or 0) / 100, -0.9, 0.9)
+
+	-- AimHeightBias lifts the point up the head, as a percentage of its half
+	-- height. Up to 90% it is still inside the hitbox, so the hit is guaranteed and
+	-- the point is clamped to stay that way. Past 90% it has deliberately left the
+	-- head, and the clamp is skipped rather than silently undoing what was asked
+	-- for. That is allowed here because the gun resolves hits with a 2.5-stud
+	-- region and picks a single part out of it rather than casting a ray — so a
+	-- point just above the skull can still register on it, and aiming high is the
+	-- only thing measured so far that actually raises the headshot rate.
+	local bias = math.clamp((tonumber(flag("AimHeightBias")) or 0) / 100, -1.5, 1.5)
 	if bias ~= 0 then
 		out = out + part.CFrame.UpVector * (half.Y * bias)
-		local lift = part.CFrame:VectorToObjectSpace(out - pos)
-		out = pos + part.CFrame:VectorToWorldSpace(Vector3.new(
-			math.clamp(lift.X, -(half.X - margin), half.X - margin),
-			math.clamp(lift.Y, -(half.Y - margin), half.Y - margin),
-			math.clamp(lift.Z, -(half.Z - margin), half.Z - margin)))
+		if math.abs(bias) <= 0.9 then
+			local lift = part.CFrame:VectorToObjectSpace(out - pos)
+			out = pos + part.CFrame:VectorToWorldSpace(Vector3.new(
+				math.clamp(lift.X, -(half.X - margin), half.X - margin),
+				math.clamp(lift.Y, -(half.Y - margin), half.Y - margin),
+				math.clamp(lift.Z, -(half.Z - margin), half.Z - margin)))
+		end
 	end
 	return out
 end
@@ -3370,14 +3380,17 @@ do
 		})
 		aimBox:AddSlider("AimHeightBias", {
 			Text = "Aim height in the head",
-			Min = -50, Max = 80, Increment = 5, Default = DEFAULTS.AimHeightBias, Suffix = "%",
+			Min = -50, Max = 150, Increment = 5, Default = DEFAULTS.AimHeightBias, Suffix = "%",
 			VisibleWhen = "AimEnabled",
-			Tooltip = "Where inside the head hitbox the crosshair sits. The hitbox and the zombie you can "
-				.. "see are not in the same place — measured up to 1.4 studs apart, in a different "
-				.. "direction per zombie — so the aim sits at whichever point is inside the hitbox and "
-				.. "closest to the head you can see. Nudge this up if the crosshair still reads low on the "
-				.. "zombie; it only ever moves the aim point inside the hitbox, so it cannot cost you the "
-				.. "hit.",
+			Tooltip = "Where the crosshair sits on the head, as a percentage of half its height. The "
+				.. "hitbox and the zombie you can see are not in the same place — measured up to 1.4 "
+				.. "studs apart, in a different direction per zombie — so the aim sits at whichever point "
+				.. "is inside the hitbox and closest to the head you can see, and this lifts it from "
+				.. "there. Up to 90% it is still inside the hitbox and the hit is guaranteed. Past 90% "
+				.. "it has left the head on purpose: that is allowed because the gun resolves hits with a "
+				.. "2.5-stud region rather than a ray, so a point just above the skull can still register "
+				.. "on it — and aiming high is the only thing measured so far that raises the headshot "
+				.. "rate. If shots start missing entirely, you have gone too far.",
 		})
 
 		local trigBox = aimTab:AddRightGroupbox("Triggerbot", "mouse-pointer-click")
