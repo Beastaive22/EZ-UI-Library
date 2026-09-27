@@ -107,13 +107,26 @@ end
 -- quietly go back to Warehouse on Normal after the first match.
 local INTENT_FILE = "comz-survival.txt"
 
+-- `ok` distinguishes "the file says the farm is off" from "the file could not be
+-- read". Without it a single transient failure reads as false, and syncIntent then
+-- writes that false back — silently switching the farm off and persisting it. That
+-- happened for real: the intent file was found reading enabled=0 with the user
+-- never having touched it.
 local function readIntent()
-	local out = { enabled = false, map = nil, difficulty = nil }
+	local out = { enabled = false, map = nil, difficulty = nil, ok = false }
 	if type(isfile) ~= "function" or type(readfile) ~= "function" then return out end
-	local ok, exists = pcall(isfile, INTENT_FILE)
-	if not ok or not exists then return out end
-	local ok2, data = pcall(readfile, INTENT_FILE)
-	if not ok2 then return out end
+
+	local okFile, exists = pcall(isfile, INTENT_FILE)
+	if not okFile then return out end
+	if not exists then
+		-- No file at all is a real answer: the farm has never been switched on.
+		out.ok = true
+		return out
+	end
+
+	local okRead, data = pcall(readfile, INTENT_FILE)
+	if not okRead or data == nil then return out end
+	out.ok = true
 	data = tostring(data)
 
 	-- The first version of this file held a bare "0"/"1". Migrate it rather than
@@ -1396,6 +1409,11 @@ end
 
 -- Written only when the value changes, so this is not a file write every tick.
 local function syncIntent()
+	-- Never write when the file could not be read this process: we do not know what
+	-- the user asked for, and writing would persist a default over their choice. A
+	-- single failed read used to switch the farm off for good.
+	if not SAVED_INTENT.ok then return end
+
 	local now = {
 		enabled = flag("SurvivalEnabled") and true or false,
 		map = flag("SurvivalMap"),
