@@ -551,12 +551,31 @@ local DRAWING_OK = type(Drawing) == "table" and type(Drawing.new) == "function"
 local FONT = (Drawing and Drawing.Fonts and Drawing.Fonts.Plex) or 0
 
 local pools = {}      -- [guid] = drawing set
+local poolFree = {}   -- recycled drawing sets, see newPool/releasePool
 local chams = {}      -- [guid] = Highlight
+local chamsFree = {}  -- recycled Highlights
 local chamsFolder
 local fovCircle
 local aimPoint
 
+-- Drawing objects are expensive to create and destroy, and in survival they were
+-- being created and destroyed constantly: sixty-odd zombies on screen with new
+-- ones spawning and dying every second meant dozens of pools a second, eight
+-- Drawing objects each, plus a Highlight. Create/destroy churn on that scale is
+-- the thing that varies most between executor Drawing implementations, and it is
+-- the most likely reason this game crashes on one of them after a while.
+--
+-- Pools are recycled instead. A zombie that dies hands its pool back and the next
+-- one to spawn picks it up, so the object count settles at roughly the number of
+-- zombies alive at once and then stops moving. Both free lists are capped so a map
+-- with a huge one-off horde cannot leave every one of those objects resident
+-- afterwards — 80 spares is 640 Drawings, which is already a generous ceiling.
+local POOL_FREE_MAX = 80
+
 local function newPool()
+	local reused = table.remove(poolFree)
+	if reused then return reused end
+
 	local p = {
 		box = Drawing.new("Square"),
 		fill = Drawing.new("Square"),
@@ -601,6 +620,17 @@ local function destroyPool(p)
 	for _, obj in pairs(p) do pcall(function() obj:Remove() end) end
 end
 
+-- Hand a pool back for reuse rather than tearing it down. Hidden first, so a
+-- recycled pool can never flash on screen at its previous position.
+local function releasePool(p)
+	hidePool(p)
+	if #poolFree >= POOL_FREE_MAX then
+		destroyPool(p)
+		return
+	end
+	poolFree[#poolFree + 1] = p
+end
+
 local function protectedParent()
 	local ok, hui = pcall(function() return gethui and gethui() end)
 	if ok and typeof(hui) == "Instance" then return hui end
@@ -612,13 +642,34 @@ end
 local function chamsFor(e)
 	local h = chams[e.id]
 	if not h then
-		h = Instance.new("Highlight")
-		h.Name = "ComzChams"
-		h.Parent = chamsFolder
+		-- Recycled in the same way as the drawing pools: a Highlight per zombie,
+		-- created and destroyed with every spawn and death, added up to the same
+		-- kind of churn.
+		h = table.remove(chamsFree)
+		if not h then
+			h = Instance.new("Highlight")
+			h.Name = "ComzChams"
+			h.Parent = chamsFolder
+		end
 		chams[e.id] = h
 	end
 	h.Adornee = e.model
 	return h
+end
+
+-- Hand a Highlight back for reuse: disabled and detached first, so a recycled one
+-- cannot show up adorning the wrong model.
+local function releaseChams(id)
+	local h = chams[id]
+	if not h then return end
+	h.Enabled = false
+	h.Adornee = nil
+	chams[id] = nil
+	if #chamsFree >= POOL_FREE_MAX then
+		pcall(function() h:Destroy() end)
+		return
+	end
+	chamsFree[#chamsFree + 1] = h
 end
 
 ----------------------------------------------------------------
@@ -627,7 +678,9 @@ end
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
-local visCache = {}
+-- Weakly keyed on the guid: entries are only useful while the zombie exists, and
+-- a session's worth of unique guids otherwise accumulates here forever.
+local visCache = setmetatable({}, { __mode = "k" })
 local VIS_TTL = 0.1
 
 -- The ray is aimed AT the target and the target is deliberately left hittable:
@@ -2778,15 +2831,13 @@ local function renderESP()
 		end
 	end
 
-	-- drop pools for zombies that no longer exist
+	-- Recycle pools and highlights for zombies that no longer exist, rather than
+	-- tearing them down and rebuilding them for the next spawn.
 	for id, pool in pairs(pools) do
 		if not Entities[id] then
-			destroyPool(pool)
+			releasePool(pool)
 			pools[id] = nil
-			if chams[id] then
-				chams[id]:Destroy()
-				chams[id] = nil
-			end
+			releaseChams(id)
 		end
 	end
 
@@ -3756,10 +3807,15 @@ task.spawn(function()
 				-- The aim error is in the line on purpose: it is the difference
 				-- between "it has a target" and "it is actually allowed to shoot",
 				-- and it is the number to watch when the fire gate needs tuning.
-				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s | err %s | reticle %s")
+				-- The object counts are in this line on purpose: if the game ever
+				-- crashes after a while, these are the numbers to watch. They should
+				-- sit flat at roughly the number of zombies alive at once; if they
+				-- climb match after match, something is not being recycled.
+				statusLabel:Set(("Tracked %d | on screen %d | aiming %s @ %s | err %s | reticle %s | draw %d + %d spare, chams %d + %d")
 					:format(stats.tracked, stats.onScreen, stats.locked or "—", stats.aimPart or "—",
 						stats.aimError and ("%.2f°"):format(stats.aimError) or "—",
-						stats.crosshairDeg and ("%+.2f° off axis"):format(stats.crosshairDeg) or "not found"))
+						stats.crosshairDeg and ("%+.2f° off axis"):format(stats.crosshairDeg) or "not found",
+						#pools, #poolFree, #chams, #chamsFree))
 			end)
 		end
 		if autoLeaveLabel then
@@ -3832,6 +3888,16 @@ local function stop(destroyWindow)
 	for id, h in pairs(chams) do
 		pcall(function() h:Destroy() end)
 		chams[id] = nil
+	end
+	-- The recycled ones have to go too, or unloading leaves a screenful of idle
+	-- Drawings and Highlights behind.
+	for i = #poolFree, 1, -1 do
+		destroyPool(poolFree[i])
+		poolFree[i] = nil
+	end
+	for i = #chamsFree, 1, -1 do
+		pcall(function() chamsFree[i]:Destroy() end)
+		chamsFree[i] = nil
 	end
 	if fovCircle then
 		pcall(function() fovCircle:Remove() end)
