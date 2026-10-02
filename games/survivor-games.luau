@@ -1937,8 +1937,8 @@ howBox:AddParagraph({
 howBox:AddParagraph({
     Title = "Across teleports",
     Content = "queue_on_teleport re-runs the hub loader in the next place, and survivor-games-intent.txt "
-        .. "remembers whether the farm was on. Closing the window switches it off for good; the "
-        .. "master toggle is the switch you want.",
+        .. "remembers whether the farm was on. The master toggle writes that file; closing the window "
+        .. "only stops the current instance.",
 })
 howBox:AddParagraph({
     Title = "Debugging a local edit",
@@ -2035,7 +2035,10 @@ if g then
 end
 
 EZ:OnDestroy(function()
-    pcall(destroy, false)
+    -- keepIntent: a teardown is often external (another script loading the
+    -- library, the loader's catalog fallback), and it must not flip the farm
+    -- to "off" in the intent file. Only the toggle and handle.stop() do that.
+    pcall(destroy, true)
     pcall(function() QuickBar:Destroy() end)
     pcall(function() NotifHistory:Destroy() end)
 end)
