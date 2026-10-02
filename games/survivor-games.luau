@@ -1091,7 +1091,10 @@ local function dropKey(drop)
     return drop:GetAttribute("DropGuid") or drop.Name
 end
 
-local function nearestWantedDrop(range, origin, owned)
+-- No search radius: scan the whole ItemDrops folder for wanted items and take
+-- the nearest one to `origin` (or to the character). The folder is small and
+-- "walk to it" is a teleport anyway, so distance is just a travel-order hint.
+local function nearestWantedDrop(origin, owned)
     local folder = workspace:FindFirstChild("ItemDrops")
     if not folder then return nil end
 
@@ -1109,10 +1112,9 @@ local function nearestWantedDrop(range, origin, owned)
             local handle = drop:FindFirstChild("Handle") or drop:FindFirstChildWhichIsA("BasePart")
             local itemId = drop:GetAttribute("ItemId")
             if handle and handle:IsA("BasePart") and type(itemId) == "string"
-                and wantsItem(itemId, owned) then
+                and wantsItem(itemId, owned) and insideZone(handle.Position, -40) then
                 local distance = (handle.Position - from).Magnitude
-                if distance <= range and (not bestDistance or distance < bestDistance)
-                    and insideZone(handle.Position, -40) then
+                if not bestDistance or distance < bestDistance then
                     best, bestDistance = drop, distance
                 end
             end
@@ -1610,7 +1612,7 @@ local function stepFarm()
 
     local function collectKillDrop()
         if os.clock() >= (S.lootUntil or 0) or not S.lootPosition then return false end
-        local drop = nearestWantedDrop(140, S.lootPosition, owned)
+        local drop = nearestWantedDrop(S.lootPosition, owned)
         if not drop then
             S.lootUntil = 0
             return false
@@ -1659,7 +1661,7 @@ local function stepFarm()
         return
     end
 
-    local drop = nearestWantedDrop(120, nil, owned)
+    local drop = nearestWantedDrop(nil, owned)
     if drop then
         setStatus("Collecting a drop")
         if collectDrop(drop) then return end
@@ -1878,13 +1880,8 @@ chestBox:AddSlider("SurvivorChestRange", {
 
 dropBox:AddToggle("SurvivorCollectDrops", {
     Text = "Collect wanted ground drops",
+    Description = "Scans workspace.ItemDrops anywhere on the map and teleports to upgrades.",
     Default = true,
-})
-dropBox:AddSlider("SurvivorDropRange", {
-    Text = "Drop search range",
-    Min = 25, Max = 300, Increment = 5, Default = 150,
-    Suffix = " studs",
-    VisibleWhen = "SurvivorCollectDrops",
 })
 dropBox:AddToggle("SurvivorDropJunk", {
     Text = "Throw out junk gear",
