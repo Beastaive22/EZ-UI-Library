@@ -1376,9 +1376,37 @@ end
 ----------------------------------------------------------------
 -- Match flow
 ----------------------------------------------------------------
+
+-- A requeue search in progress: the end screen's Play Again label flips to
+-- "CANCEL" (WinScreenClient drives it from the ReQueue attribute) and the
+-- search frame counts up. Firing PlayAgain in that state CANCELS the search —
+-- the start/stop matchmaking loop — so this must be checked first.
+local function requeueSearchActive()
+    if lp:GetAttribute("ReQueue") == true or lp:GetAttribute("ReQueueFound") == true then
+        return true
+    end
+    local hotbar = PlayerGui:FindFirstChild("HotbarGui")
+    local buttons = hotbar and hotbar:FindFirstChild("EndScreenButtons")
+    local playAgain = buttons and buttons:FindFirstChild("PlayAgainButton")
+    if playAgain then
+        for _, descendant in ipairs(playAgain:GetDescendants()) do
+            if descendant:IsA("TextLabel")
+                and string.find(string.upper(descendant.Text), "CANCEL", 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function tryRequeue(reason)
     if flag("SurvivorAutoRequeue", true) ~= true then
         setStatus("Match over - requeue is off")
+        return false
+    end
+    if requeueSearchActive() then
+        S.requeueAttempts = 0
+        setStatus("Searching for a match")
         return false
     end
     -- PlayAgain is a nudge, not a metronome: the server resets the match on
@@ -1432,7 +1460,9 @@ end
 local function tryQueue()
     if flag("SurvivorAutoQueue", false) ~= true then return end
 
-    if lp:GetAttribute("InQueue") == true then
+    -- Same rule as the end screen: while the game is searching, touching the
+    -- queue at all would cancel it.
+    if requeueSearchActive() or lp:GetAttribute("InQueue") == true then
         S.queueFired = false
         setStatus("Queued - waiting for a match")
         return
