@@ -1628,7 +1628,6 @@ local function stepFarm()
         end
     end
 
-    if checkRequeue() then return end
     if humanoid.Health <= 0 then return end
 
     local phase = matchPhase()
@@ -1638,9 +1637,13 @@ local function stepFarm()
         tryRequeue("phase " .. tostring(phase))
         return
     end
+
+    -- Pre-match freeze: everyone is caged, so this is free real estate — go
+    -- empty the chests before anybody can move. This runs BEFORE the
+    -- eliminated/end-screen check on purpose: right after the hop into a new
+    -- match those flags are still set from the previous one, and they used to
+    -- stall the raid until the countdown had already finished.
     if phase == "Waiting" or phase == "Starting" or lp:GetAttribute("CanDealDamage") == false then
-        -- Pre-match freeze: everyone is caged, so this is free real estate —
-        -- go empty the chests before anybody can move.
         if flag("SurvivorPreMatchLoot", true) == true then
             local chest = nearestChest(3000)
             if chest then
@@ -1651,6 +1654,8 @@ local function stepFarm()
         setStatus("Waiting for the match to start...")
         return
     end
+
+    if checkRequeue() then return end
 
     -- gear hygiene runs everywhere, including mid-fight (throttled)
     if os.clock() - S.lastSweep > 4 then
