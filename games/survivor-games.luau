@@ -628,6 +628,16 @@ local function wantsItem(itemId, owned)
     local item = itemInfo(itemId)
     local itemType = itemKind(itemId, item)
 
+    -- Wooden gear is never wanted: stone is everywhere and every chest has
+    -- better. This keeps wooden items in chests and off the floor, and stops
+    -- a wooden drop from ever costing a trip.
+    if itemId:match("^Wood") then
+        local kind = itemKind(itemId, item)
+        if kind == "Weapon" or kind == "Armor" or kind == "Tool" then
+            return false
+        end
+    end
+
     if itemType == "Consumable" then
         -- Meals are capped: the farm wants a few, not a pantry, so past the
         -- cap it stops chasing meat (and stops farming animals for it).
@@ -1623,7 +1633,16 @@ local function stepFarm()
         tryRequeue("phase " .. tostring(phase))
         return
     end
-    if phase == "Waiting" or lp:GetAttribute("CanDealDamage") == false then
+    if phase == "Waiting" or phase == "Starting" or lp:GetAttribute("CanDealDamage") == false then
+        -- Pre-match freeze: everyone is caged, so this is free real estate —
+        -- go empty the chests before anybody can move.
+        if flag("SurvivorPreMatchLoot", true) == true then
+            local chest = nearestChest(3000)
+            if chest then
+                setStatus("Pre-match chest run")
+                if lootChest(chest) then return end
+            end
+        end
         setStatus("Waiting for the match to start...")
         return
     end
@@ -1938,6 +1957,11 @@ chestBox:AddToggle("SurvivorLootChests", {
     Text = "Open and loot chests",
     Description = "Off by default: kills carry better gear than chests. Filtered when on.",
     Default = false,
+})
+chestBox:AddToggle("SurvivorPreMatchLoot", {
+    Text = "Loot chests during the start freeze",
+    Description = "Everyone is caged before the match — empty chests while nobody can move.",
+    Default = true,
 })
 chestBox:AddSlider("SurvivorChestRange", {
     Text = "Chest search range",
