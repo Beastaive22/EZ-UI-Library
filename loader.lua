@@ -110,6 +110,10 @@ local GAMES = {
 		slug = "call-of-mini-zombies-2", name = "Call of Mini Zombies 2", note = "zombie ESP + aim assist",
 		universes = { 5497606909 },               -- Call of Bloxia Productions
 	},
+	{
+		slug = "survivor-games", name = "Survivor Games", note = "autofarm",
+		universes = { 10120569105 },              -- CreatorVerse
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
