@@ -1049,7 +1049,7 @@ local function waitForChestOpen(timeout)
     local deadline = os.clock() + timeout
     while os.clock() < deadline do
         if lp:GetAttribute("OpenChestId") then return true end
-        task.wait(0.05)
+        task.wait(0.02)
     end
     return lp:GetAttribute("OpenChestId") ~= nil
 end
@@ -1062,8 +1062,11 @@ local function lootChest(chest)
         return false
     end
 
-    pivotTo(core.Position, core.Position)
-    task.wait(0.1)
+    -- Speed matters here (the start freeze is short): land, open, move the
+    -- wanted slots, close, leave. Every wait below is the minimum that still
+    -- lets the server round-trip land.
+    pivotTo(core.Position, core.Position, nil, true)
+    task.wait(0.03)
 
     local root = getRoot()
     if not root or (core.Position - root.Position).Magnitude > 10 then
@@ -1074,14 +1077,14 @@ local function lootChest(chest)
     -- server answers with ChestSnapshot, and the game's ChestClient then sets
     -- OpenChestId — that attribute is the real "it opened" signal.
     pcall(function() prompt:InputHoldBegin() end)
-    task.wait(math.max(0.05, (prompt.HoldDuration or 0) + 0.05))
+    task.wait(math.max(0.02, (prompt.HoldDuration or 0) + 0.02))
     pcall(function() prompt:InputHoldEnd() end)
 
-    if not waitForChestOpen(1.2) then
+    if not waitForChestOpen(0.8) then
         if type(fireproximityprompt) == "function" then
             pcall(fireproximityprompt, prompt)
         end
-        if not waitForChestOpen(1.0) then
+        if not waitForChestOpen(0.6) then
             markChestSkip(chest, 20)
             return false
         end
@@ -1116,15 +1119,17 @@ local function lootChest(chest)
                 })
             end)
         end
-        task.wait(0.03)
+        task.wait(0.005)
     end
-    task.wait(0.12)
+    task.wait(0.03)
     if CloseChestRequest then
         pcall(function() CloseChestRequest:FireServer() end)
     end
 
-    local deadline = os.clock() + 1
-    while os.clock() < deadline and lp:GetAttribute("OpenChestId") do task.wait(0.05) end
+    -- Do not sit on the close: the attribute clears on its own, and the next
+    -- chest is worth more than the confirmation.
+    local deadline = os.clock() + 0.15
+    while os.clock() < deadline and lp:GetAttribute("OpenChestId") do task.wait(0.02) end
 
     stats.chests = stats.chests + 1
     markChestSkip(chest, 90)
