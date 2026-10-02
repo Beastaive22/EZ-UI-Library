@@ -553,7 +553,7 @@ local function foodTarget()
 end
 
 local function ownedBest(snapshot)
-    local owned = { weapons = {}, armor = {}, foodCount = 0, arrows = 0 }
+    local owned = { weapons = {}, armor = {}, equipped = {}, foodCount = 0, arrows = 0 }
     if not snapshot then return owned end
 
     local function considerArmor(itemId)
@@ -566,10 +566,23 @@ local function ownedBest(snapshot)
         end
     end
 
+    -- Worn armor is tracked separately from carried armor: "is this drop an
+    -- upgrade" looks at everything owned, but the junk sweep may only throw a
+    -- piece away when the WORN armor already beats it.
     if snapshot.Armor then
         for _, entry in pairs(snapshot.Armor) do
             local itemId = entry and entry.ItemId
-            if type(itemId) == "string" then considerArmor(itemId) end
+            if type(itemId) == "string" then
+                local item = itemInfo(itemId)
+                local slot = armorSlotOf(itemId, item)
+                if slot then
+                    local tier = itemTier(itemId, item)
+                    if not owned.equipped[slot] or tier > owned.equipped[slot] then
+                        owned.equipped[slot] = tier
+                    end
+                end
+                considerArmor(itemId)
+            end
         end
     end
 
@@ -607,6 +620,9 @@ local function wantsItem(itemId, owned)
         -- a stack is plenty: without the cap the bot would chase every arrow
         -- on the map between fights
         return owned ~= nil and owned.weapons.Bow ~= nil and owned.arrows < 64
+    end
+    if itemId == "Diamond" then
+        return true -- raw diamonds are crafting currency; never walk past one
     end
 
     local item = itemInfo(itemId)
@@ -817,7 +833,10 @@ local function sweepInventory(snapshot)
         local keep = keeper[info.key]
         local floor
         if info.key:sub(1, 2) == "a:" then
-            floor = owned.armor[info.key:sub(3)]
+            -- Only WORN armor justifies throwing a piece away. Using the
+            -- carried best here made the sweep drop the very upgrade it had
+            -- just picked up (diamond helmet in, diamond helmet straight out).
+            floor = owned.equipped[info.key:sub(3)]
         end
         local junk = (info ~= keep) or (floor ~= nil and floor >= info.tier)
         if junk and info.slot ~= snapshot.SelectedHotbarSlot then
