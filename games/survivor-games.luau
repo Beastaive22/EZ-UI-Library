@@ -1145,7 +1145,7 @@ local function collectDrop(drop)
 
     -- Give the server a beat to notice and fly the drop in — but bail out if
     -- someone closes in: standing still on a pickup is free damage.
-    local deadline = os.clock() + 1.2
+    local deadline = os.clock() + 2.0
     while os.clock() < deadline do
         if drop.Parent == nil then
             stats.drops = stats.drops + 1
@@ -1157,7 +1157,10 @@ local function collectDrop(drop)
         task.wait(0.1)
     end
 
-    dropSkip[dropKey(drop)] = os.clock() + 45
+    -- shorter blacklist: a failed grab is usually a transient (someone walked
+    -- into the 35-stud bail-out zone, or the server was slow) and 45 s of
+    -- ignoring a wanted upgrade is worse than retrying it soon
+    dropSkip[dropKey(drop)] = os.clock() + 15
     note("Drop " .. tostring(drop:GetAttribute("ItemId") or drop.Name) .. " would not pick up", "Warn")
     return true
 end
