@@ -68,11 +68,37 @@ print("[SURVIVOR] starting")
 -- instance is about to read it.
 local function previousInstance()
     local g = getgenv and getgenv()
-    if g and g.__SURVIVOR_FARM_DESTROY then
-        pcall(g.__SURVIVOR_FARM_DESTROY, true)
+    for _ = 1, 64 do
+        if not (g and g.__SURVIVOR_FARM_DESTROY) then break end
+        local kill = g.__SURVIVOR_FARM_DESTROY
+        g.__SURVIVOR_FARM_DESTROY = nil
+        g.__SURVIVOR_FARM = nil
+        pcall(kill, true)
     end
 end
 previousInstance()
+
+-- Singleton guard. A place change can run this module more than once — the
+-- queue_on_teleport entries accumulate across hops and every armed instance
+-- queues another one — and every run used to install a full farm: dozens of
+-- instances shared one character, teleported it to different chests and fired
+-- the same chest moves at each other, so the server rejected most of them and
+-- chests "opened but looted nothing". Each start takes a generation number,
+-- re-checks it while running, and a run that is no longer the newest stops
+-- itself and destroys its own UI.
+local MY_GEN
+do
+    local g = getgenv and getgenv()
+    if g then
+        MY_GEN = (tonumber(g.__SURVIVOR_GEN) or 0) + 1
+        g.__SURVIVOR_GEN = MY_GEN
+    end
+end
+
+local function superseded()
+    local g = getgenv and getgenv()
+    return g ~= nil and MY_GEN ~= nil and tonumber(g.__SURVIVOR_GEN) ~= MY_GEN
+end
 
 ----------------------------------------------------------------
 -- Library (canonical EZ-UI-Library setup)
@@ -90,6 +116,13 @@ SaveManager:Bind(EZ, "SurvivorAutofarmConfigs")
 ThemeManager:Bind(EZ, { File = "SurvivorAutofarm_Theme.txt" })
 ThemeManager:LoadSaved()
 for name, tbl in EZ.Themes do ThemeManager:AddTheme(name, tbl) end
+
+-- Another copy took a newer generation while this one was fetching the
+-- library: it owns the farm now, so this one steps aside before building anything.
+if superseded() then
+    pcall(function() EZ:Destroy() end)
+    return
+end
 
 ----------------------------------------------------------------
 -- Runtime
@@ -1086,13 +1119,18 @@ local function nearestChest(range)
     return best, bestDistance
 end
 
-local function waitForChestOpen(timeout)
-    local deadline = os.clock() + timeout
-    while os.clock() < deadline do
-        if lp:GetAttribute("OpenChestId") then return true end
-        task.wait(0.02)
+-- Every wanted slot of a chest snapshot, in slot order.
+local function wantedChestSlots(snapshot, owned)
+    local slots = {}
+    if not (snapshot and snapshot.Slots) then return slots end
+    for slot = 1, CHEST_SLOTS do
+        local entry = snapshot.Slots[tostring(slot)]
+        local itemId = entry and entry.ItemId
+        if type(itemId) == "string" and wantsItem(itemId, owned) then
+            slots[#slots + 1] = slot
+        end
     end
-    return lp:GetAttribute("OpenChestId") ~= nil
+    return slots
 end
 
 local function lootChest(chest)
@@ -1114,21 +1152,35 @@ local function lootChest(chest)
         return false -- still on the way; try again next tick
     end
 
-    -- The prompt holds for 0 s, so begin/end back to back is enough. The
-    -- server answers with ChestSnapshot, and the game's ChestClient then sets
-    -- OpenChestId — that attribute is the real "it opened" signal.
-    pcall(function() prompt:InputHoldBegin() end)
-    task.wait(math.max(0.02, (prompt.HoldDuration or 0) + 0.02))
-    pcall(function() prompt:InputHoldEnd() end)
+    -- Open THIS chest, not whatever was open before. A leftover OpenChestId
+    -- from the previous chest made the moves fire at a chest that was already
+    -- closed — the server ignored all of them and the run still counted the
+    -- chest as looted. __chestUid is exactly the id the server reports in
+    -- OpenChestId (verified live: both were Chest_01_134).
+    local chestUid = chest:GetAttribute("__chestUid") or chest.Name
+    local function openedNow()
+        local id = lp:GetAttribute("OpenChestId")
+        return id ~= nil and (chestUid == nil or id == chestUid)
+    end
 
-    if not waitForChestOpen(0.8) then
-        if type(fireproximityprompt) == "function" then
-            pcall(fireproximityprompt, prompt)
-        end
-        if not waitForChestOpen(0.6) then
-            markChestSkip(chest, 20)
-            return false
-        end
+    -- fireproximityprompt is the trigger that still answers in the current
+    -- build; the input-hold path stopped opening chests (verified live), so it
+    -- is the fallback now instead of the other way around.
+    if type(fireproximityprompt) == "function" then
+        pcall(fireproximityprompt, prompt)
+    end
+    local deadline = os.clock() + 0.5
+    while os.clock() < deadline and not openedNow() do task.wait(0.02) end
+    if not openedNow() then
+        pcall(function() prompt:InputHoldBegin() end)
+        task.wait(math.max(0.02, (prompt.HoldDuration or 0) + 0.02))
+        pcall(function() prompt:InputHoldEnd() end)
+        deadline = os.clock() + 0.8
+        while os.clock() < deadline and not openedNow() do task.wait(0.02) end
+    end
+    if not openedNow() then
+        markChestSkip(chest, 20)
+        return false
     end
 
     local chestId = lp:GetAttribute("OpenChestId")
@@ -1137,47 +1189,104 @@ local function lootChest(chest)
         return false
     end
 
+    -- The remotes are captured once at load; a script that started before the
+    -- Remotes children had replicated would hold nil forever. Re-find on use.
+    local moveChest = MoveChestItem
+    if not (moveChest and moveChest.Parent) then
+        moveChest = RemotesFolder and RemotesFolder:FindFirstChild("MoveChestItem")
+    end
+    local closeChest = CloseChestRequest
+    if not (closeChest and closeChest.Parent) then
+        closeChest = RemotesFolder and RemotesFolder:FindFirstChild("CloseChestRequest")
+    end
+
+    local function fireMoves(slots)
+        for _, slot in ipairs(slots) do
+            if not RUNNING or not S.armed then break end
+            if moveChest and moveChest.Parent then
+                pcall(function()
+                    moveChest:FireServer({
+                        Action = "QuickMove",
+                        FromContainer = "Chest",
+                        ChestId = chestId,
+                        FromSlot = slot,
+                    })
+                end)
+            end
+            task.wait(0.005)
+        end
+    end
+
     -- Read what is actually inside before moving anything: only wanted slots
     -- get quick-moved, and only from a snapshot that belongs to THIS chest (the
     -- previous chest's contents linger in the client view otherwise). A
-    -- snapshot that cannot be read means take-everything rather than no loot.
+    -- snapshot that cannot be read — or that comes back empty, which is how a
+    -- mistimed read looks — means take-everything rather than no loot.
     local chestSnapshot = waitForChestSnapshot(chestId)
     local readable = chestSnapshot ~= nil and chestSnapshot.Slots ~= nil
+        and next(chestSnapshot.Slots) ~= nil
         and (chestSnapshot.ChestId == nil or chestSnapshot.ChestId == chestId)
     local owned = ownedBest(getSnapshot())
-    for slot = 1, CHEST_SLOTS do
-        if not RUNNING or not S.armed then break end
-        local take = not readable
-        if readable then
-            local entry = chestSnapshot.Slots[tostring(slot)]
-            local itemId = entry and entry.ItemId
-            take = type(itemId) == "string" and wantsItem(itemId, owned)
+
+    -- A move the server ignores looks identical to one that landed from out
+    -- here, so when there was something to take, confirm on the inventory.
+    local function inventorySignature()
+        local snap = getSnapshot()
+        local parts = {}
+        if snap and snap.Slots then
+            for slot, e in pairs(snap.Slots) do
+                parts[#parts + 1] = tostring(slot) .. ":" .. tostring(e.ItemId) .. "x" .. tostring(e.Count or 1)
+            end
         end
-        if take and MoveChestItem then
-            pcall(function()
-                MoveChestItem:FireServer({
-                    Action = "QuickMove",
-                    FromContainer = "Chest",
-                    ChestId = chestId,
-                    FromSlot = slot,
-                })
-            end)
+        for armorSlot, e in pairs((snap and snap.Armor) or {}) do
+            local id = type(e) == "table" and e.ItemId or e
+            parts[#parts + 1] = "a" .. tostring(armorSlot) .. ":" .. tostring(id)
         end
-        task.wait(0.005)
+        table.sort(parts)
+        return table.concat(parts, "|")
     end
-    task.wait(0.03)
-    if CloseChestRequest then
-        pcall(function() CloseChestRequest:FireServer() end)
+
+    local leftBehind = 0
+    if readable then
+        local wanted = wantedChestSlots(chestSnapshot, owned)
+        if #wanted > 0 then
+            local before = inventorySignature()
+            fireMoves(wanted)
+            task.wait(0.2)
+            if inventorySignature() == before then
+                -- Nothing changed: the moves were ignored. One retry, then say so.
+                fireMoves(wanted)
+                task.wait(0.2)
+                if inventorySignature() == before then
+                    leftBehind = #wanted
+                end
+            end
+        end
+    else
+        local all = {}
+        for slot = 1, CHEST_SLOTS do all[#all + 1] = slot end
+        fireMoves(all)
+    end
+    if closeChest then
+        pcall(function() closeChest:FireServer() end)
     end
 
     -- Do not sit on the close: the attribute clears on its own, and the next
     -- chest is worth more than the confirmation.
-    local deadline = os.clock() + 0.15
-    while os.clock() < deadline and lp:GetAttribute("OpenChestId") do task.wait(0.02) end
+    local closeDeadline = os.clock() + 0.15
+    while os.clock() < closeDeadline and lp:GetAttribute("OpenChestId") do task.wait(0.02) end
 
     stats.chests = stats.chests + 1
-    markChestSkip(chest, 90)
-    note(string.format("Chest %s looted", tostring(chestId)))
+    if leftBehind > 0 then
+        -- Still full: keep it on the short list so the raid comes back to it.
+        markChestSkip(chest, 15)
+        local message = string.format("Chest %s: %d wanted item(s) did not move", tostring(chestId), leftBehind)
+        note(message, "Warn")
+        warn("[SURVIVOR] " .. message)
+    else
+        markChestSkip(chest, 90)
+        note(string.format("Chest %s looted", tostring(chestId)))
+    end
     return true
 end
 
@@ -1836,6 +1945,19 @@ end
 local lastStatsAt = 0
 local function mainLoop()
     while RUNNING do
+        if superseded() then
+            -- A newer copy took over: stop acting, drop the connections and
+            -- this instance's own windows. The intent file is left alone —
+            -- the surviving instance owns the on/off state now.
+            RUNNING = false
+            S.armed = false
+            for _, conn in ipairs(Conns) do
+                pcall(function() conn:Disconnect() end)
+            end
+            Conns = {}
+            pcall(function() EZ:Destroy() end)
+            return
+        end
         -- 20 Hz: an attack loop that re-positions behind the target needs to
         -- keep up with it, not lag a heartbeat behind.
         task.wait(0.05)
@@ -1916,6 +2038,12 @@ end
 track(lp.CharacterAdded:Connect(onCharacterAdded))
 if lp.Character then
     task.spawn(onCharacterAdded, lp.Character)
+end
+
+-- Last look before the UI: a newer copy anywhere means this one is done.
+if superseded() then
+    pcall(function() EZ:Destroy() end)
+    return
 end
 
 ----------------------------------------------------------------
