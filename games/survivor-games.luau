@@ -474,10 +474,30 @@ local function itemInfo(itemId)
     return nil
 end
 
--- Tier ladder. ItemCatalog PowerRank wins where it exists (swords/axes carry
--- one: iron and gold are both 3, diamond 4, netherite 5); armor and the
--- weapons the catalog is missing entries for fall back to the name prefix.
-local MATERIAL_TIER = { Wood = 1, Stone = 2, Iron = 3, Gold = 3, Diamond = 4, Netherite = 5 }
+-- The catalog is missing entries for some ids — verified live: StoneAxe,
+-- StoneHelmet and CrossBow all error out of ItemCatalog.Get. Requiring a
+-- catalog hit therefore made every stone-tier drop invisible to the filter.
+-- Fall back to the name so those items are classified (and upgraded) too.
+local function itemKind(itemId, item)
+    local itemType = item and item.ItemType
+    if type(itemType) == "string" then return itemType end
+    if itemId:find("Helmet", 1, true) or itemId:find("Chestplate", 1, true)
+        or itemId:find("Boots", 1, true) then
+        return "Armor"
+    end
+    if itemId == "Bow" or itemId == "CrossBow" or itemId:find("Sword", 1, true)
+        or itemId:find("Axe", 1, true) or itemId:find("Pickaxe", 1, true) then
+        return "Weapon"
+    end
+    return nil
+end
+
+-- Tier ladder, used where the catalog has no PowerRank (all armor, plus the
+-- ids the catalog is missing). ItemCatalog PowerRank wins where it exists:
+-- for weapons the game itself ranks iron and gold equal (both 3) with
+-- identical damage, while the player-facing order for gear is
+-- wood < stone < iron < gold < diamond, which is what this table encodes.
+local MATERIAL_TIER = { Wood = 1, Stone = 2, Iron = 3, Gold = 4, Diamond = 5, Netherite = 6 }
 
 local function itemTier(itemId, item)
     local rank = item and tonumber(item.PowerRank)
@@ -558,7 +578,7 @@ local function ownedBest(snapshot)
         local itemId = entry and entry.ItemId
         if type(itemId) == "string" then
             local item = itemInfo(itemId)
-            local itemType = item and item.ItemType
+            local itemType = itemKind(itemId, item)
             if itemType == "Weapon" or itemType == "Tool" then
                 local class = weaponClassOf(itemId, item)
                 if class then
@@ -590,7 +610,7 @@ local function wantsItem(itemId, owned)
     end
 
     local item = itemInfo(itemId)
-    local itemType = item and item.ItemType
+    local itemType = itemKind(itemId, item)
 
     if itemType == "Consumable" then
         -- Meals are capped: the farm wants a few, not a pantry, so past the
@@ -763,7 +783,7 @@ local function sweepInventory(snapshot)
         local itemId = entry and entry.ItemId
         if type(itemId) == "string" then
             local item = itemInfo(itemId)
-            local itemType = item and item.ItemType
+            local itemType = itemKind(itemId, item)
             local key, tier
             if itemType == "Weapon" or itemType == "Tool" then
                 local class = weaponClassOf(itemId, item)
@@ -1143,23 +1163,38 @@ local function collectDrop(drop)
         end
     end
 
-    -- Give the server a beat to notice and fly the drop in — but bail out if
-    -- someone closes in: standing still on a pickup is free damage.
-    local deadline = os.clock() + 2.0
-    while os.clock() < deadline do
-        if drop.Parent == nil then
-            stats.drops = stats.drops + 1
-            return true
+    -- Stay on it: the pickup is a server-side proximity check, so the bot has
+    -- to be physically on the drop and remain there until the server flies it
+    -- in. Two attempts; an enemy walking in is never treated as a failure.
+    local function waitForPickup(seconds)
+        local deadline = os.clock() + seconds
+        while os.clock() < deadline do
+            if drop.Parent == nil then
+                stats.drops = stats.drops + 1
+                return true
+            end
+            if nearestEnemy(35) then
+                return nil -- interrupted: do not blacklist
+            end
+            task.wait(0.1)
         end
-        if nearestEnemy(35) then
-            return false
-        end
-        task.wait(0.1)
+        return false
     end
 
-    -- shorter blacklist: a failed grab is usually a transient (someone walked
-    -- into the 35-stud bail-out zone, or the server was slow) and 45 s of
-    -- ignoring a wanted upgrade is worse than retrying it soon
+    local first = waitForPickup(2.0)
+    if first then return true end
+    if first == nil then return false end
+
+    -- Second attempt from a fresh, closer pivot: the first spot can be
+    -- slightly off (the hover, or a rate-limited pivot that did not land).
+    if getRoot() then
+        pivotTo(handle.Position, handle.Position, 0.5, true)
+        task.wait(0.15)
+    end
+    local second = waitForPickup(1.6)
+    if second then return true end
+    if second == nil then return false end
+
     dropSkip[dropKey(drop)] = os.clock() + 15
     note("Drop " .. tostring(drop:GetAttribute("ItemId") or drop.Name) .. " would not pick up", "Warn")
     return true
