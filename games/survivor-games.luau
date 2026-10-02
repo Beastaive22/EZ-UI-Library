@@ -533,7 +533,7 @@ local function foodTarget()
 end
 
 local function ownedBest(snapshot)
-    local owned = { weapons = {}, armor = {}, foodCount = 0 }
+    local owned = { weapons = {}, armor = {}, foodCount = 0, arrows = 0 }
     if not snapshot then return owned end
 
     local function considerArmor(itemId)
@@ -571,6 +571,8 @@ local function ownedBest(snapshot)
                 considerArmor(itemId)
             elseif itemType == "Consumable" and isFood(itemId, item) then
                 owned.foodCount = owned.foodCount + (tonumber(entry.Count) or 1)
+            elseif itemId == "Arrow" then
+                owned.arrows = owned.arrows + (tonumber(entry.Count) or 1)
             end
         end
     end
@@ -582,7 +584,9 @@ end
 local function wantsItem(itemId, owned)
     if type(itemId) ~= "string" then return false end
     if itemId == "Arrow" then
-        return owned ~= nil and owned.weapons.Bow ~= nil
+        -- a stack is plenty: without the cap the bot would chase every arrow
+        -- on the map between fights
+        return owned ~= nil and owned.weapons.Bow ~= nil and owned.arrows < 64
     end
 
     local item = itemInfo(itemId)
@@ -1139,12 +1143,16 @@ local function collectDrop(drop)
         end
     end
 
-    -- give the server a beat to notice and fly the drop in
-    local deadline = os.clock() + 1.0
+    -- Give the server a beat to notice and fly the drop in — but bail out if
+    -- someone closes in: standing still on a pickup is free damage.
+    local deadline = os.clock() + 1.2
     while os.clock() < deadline do
         if drop.Parent == nil then
             stats.drops = stats.drops + 1
             return true
+        end
+        if nearestEnemy(35) then
+            return false
         end
         task.wait(0.1)
     end
@@ -1654,17 +1662,20 @@ local function stepFarm()
 
     if collectKillDrop() then return end
 
-    -- Hunters first: players and bots anywhere on the map beat every errand.
-    local enemy = flag("SurvivorTargetPlayers", true) == true and nearestEnemy(enemyRange()) or nil
-    if enemy then
-        engage(enemy)
-        return
-    end
-
+    -- Upgrades outrank fights: a Diamond axe or a better armor piece on the
+    -- floor is the whole point of the loot filter, and going to get it is one
+    -- teleport. collectDrop only bails out if someone is already on top of us.
     local drop = nearestWantedDrop(nil, owned)
     if drop then
         setStatus("Collecting a drop")
         if collectDrop(drop) then return end
+    end
+
+    -- Hunters next: players and bots anywhere on the map.
+    local enemy = flag("SurvivorTargetPlayers", true) == true and nearestEnemy(enemyRange()) or nil
+    if enemy then
+        engage(enemy)
+        return
     end
 
     if flag("SurvivorLootChests", false) == true and not nearestEnemy(45) then
