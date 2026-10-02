@@ -445,7 +445,12 @@ end
 ----------------------------------------------------------------
 local HOTBAR_SLOTS = (InventoryConfig and tonumber(InventoryConfig.HOTBAR_SLOTS)) or 8
 local TOTAL_SLOTS = (InventoryConfig and tonumber(InventoryConfig.TOTAL_SLOTS)) or 28
-local CHEST_SLOTS = 12
+-- The chest container is backpack-sized, not 12: the game builds the chest
+-- grid from InventoryConfig.BACKPACK_SLOTS (20 slots, verified live in
+-- ChestGui's ChestGrid) and its own quick-move handler fires FromSlot 1..20.
+-- The old 12-slot cap silently skipped chest slots 13..20 — that is why
+-- higher-tier loot was "not being picked up".
+local CHEST_SLOTS = (InventoryConfig and tonumber(InventoryConfig.BACKPACK_SLOTS)) or 20
 
 local function getSnapshot()
     if not Inventory or type(Inventory.GetSnapshot) ~= "function" then return nil end
@@ -459,6 +464,23 @@ local function getChestSnapshot()
     local ok, snapshot = pcall(Inventory.GetChestSnapshot)
     if ok and type(snapshot) == "table" then return snapshot end
     return nil
+end
+
+-- The client keeps the last chest's contents after it closes (verified live:
+-- GetChestSnapshot returned a closed chest's Slots). Reading it blindly while
+-- another chest opens is how the wrong slots get moved. This waits for the
+-- snapshot that carries the id of the chest that is open right now.
+local function waitForChestSnapshot(chestId, timeout)
+    local deadline = os.clock() + (timeout or 0.5)
+    local last
+    while true do
+        last = getChestSnapshot()
+        if last and last.Slots and (last.ChestId == nil or last.ChestId == chestId) then
+            return last
+        end
+        if os.clock() >= deadline then return last end
+        task.wait(0.02)
+    end
 end
 
 local function slotEntry(snapshot, slot)
@@ -492,17 +514,36 @@ local function itemKind(itemId, item)
     return nil
 end
 
--- Tier ladder, used where the catalog has no PowerRank (all armor, plus the
--- ids the catalog is missing). ItemCatalog PowerRank wins where it exists:
--- for weapons the game itself ranks iron and gold equal (both 3) with
--- identical damage, while the player-facing order for gear is
--- wood < stone < iron < gold < diamond, which is what this table encodes.
+-- Ranking is by the game's own numbers, not by the material's name — the two
+-- disagree, and the game is right:
+--   weapons  WeaponConfig damage: gold axe 40 < iron axe 50, gold sword = iron
+--            sword = 30. ItemCatalog PowerRank encodes the same order
+--            (GoldAxe 2 < IronAxe 3), so it is the ordinal fallback.
+--   armor    ItemCatalog ArmorStats.ArmorPoints: gold helmet 2.5 > iron 2, so
+--            here gold really is the upgrade (wood < stone < iron < gold <
+--            diamond), which is what MATERIAL_TIER encodes.
+-- Stone pieces are missing from the catalog entirely (Get errors), hence the
+-- material-name fallbacks; ArmorPoints/PowerRank win wherever they exist.
 local MATERIAL_TIER = { Wood = 1, Stone = 2, Iron = 3, Gold = 4, Diamond = 5, Netherite = 6 }
+local WEAPON_TIER = { Wood = 1, Gold = 2, Stone = 2.5, Iron = 3, Diamond = 4, Netherite = 5 }
 
-local function itemTier(itemId, item)
-    local rank = item and tonumber(item.PowerRank)
-    if rank then return rank end
-    return MATERIAL_TIER[itemId:match("^(%a+)") or ""] or 1
+-- Higher is better within a class or an armor slot. nil for things that are
+-- not gear at all (food, materials, blocks).
+local function itemPower(itemId, item)
+    local kind = itemKind(itemId, item)
+    local material = MATERIAL_TIER[itemId:match("^(%a+)") or ""]
+    if kind == "Weapon" or kind == "Tool" then
+        local rank = item and tonumber(item.PowerRank)
+        if rank then return rank end
+        return WEAPON_TIER[itemId:match("^(%a+)") or ""] or 1
+    end
+    if kind == "Armor" then
+        local stats = item and item.ArmorStats
+        local points = stats and tonumber(stats.ArmorPoints)
+        if points then return points end
+        return material or 1
+    end
+    return nil
 end
 
 local function weaponClassOf(itemId, item)
@@ -560,7 +601,7 @@ local function ownedBest(snapshot)
         local item = itemInfo(itemId)
         local slot = armorSlotOf(itemId, item)
         if not slot then return end
-        local tier = itemTier(itemId, item)
+        local tier = itemPower(itemId, item)
         if not owned.armor[slot] or tier > owned.armor[slot] then
             owned.armor[slot] = tier
         end
@@ -576,7 +617,7 @@ local function ownedBest(snapshot)
                 local item = itemInfo(itemId)
                 local slot = armorSlotOf(itemId, item)
                 if slot then
-                    local tier = itemTier(itemId, item)
+                    local tier = itemPower(itemId, item)
                     if not owned.equipped[slot] or tier > owned.equipped[slot] then
                         owned.equipped[slot] = tier
                     end
@@ -595,7 +636,7 @@ local function ownedBest(snapshot)
             if itemType == "Weapon" or itemType == "Tool" then
                 local class = weaponClassOf(itemId, item)
                 if class then
-                    local tier = itemTier(itemId, item)
+                    local tier = itemPower(itemId, item)
                     if not owned.weapons[class] or tier > owned.weapons[class] then
                         owned.weapons[class] = tier
                     end
@@ -652,7 +693,7 @@ local function wantsItem(itemId, owned)
         if not class then return false end
         if not owned then return true end
         local have = owned.weapons[class]
-        return have == nil or itemTier(itemId, item) > have
+        return have == nil or itemPower(itemId, item) > have
     end
 
     if itemType == "Armor" then
@@ -660,7 +701,7 @@ local function wantsItem(itemId, owned)
         if not slot then return false end
         if not owned then return true end
         local have = owned.armor[slot]
-        return have == nil or itemTier(itemId, item) > have
+        return have == nil or itemPower(itemId, item) > have
     end
 
     return false
@@ -673,7 +714,7 @@ local function weaponScore(itemId)
     local item = itemInfo(itemId)
     local class = weaponClassOf(itemId, item)
     if not class then return nil end
-    local tier = itemTier(itemId, item)
+    local tier = itemPower(itemId, item)
     local preferAxe = flag("SurvivorPreferAxe", true) == true
     local classWeight = ((class == "Axe") and (preferAxe and 1 or 0)) or ((class == "Sword") and (preferAxe and 0 or 1)) or 0
     return tier * 10 + classWeight
@@ -814,12 +855,12 @@ local function sweepInventory(snapshot)
             if itemType == "Weapon" or itemType == "Tool" then
                 local class = weaponClassOf(itemId, item)
                 if class then
-                    key, tier = "w:" .. class, itemTier(itemId, item)
+                    key, tier = "w:" .. class, itemPower(itemId, item)
                 end
             elseif itemType == "Armor" then
                 local armorSlot = armorSlotOf(itemId, item)
                 if armorSlot then
-                    key, tier = "a:" .. armorSlot, itemTier(itemId, item)
+                    key, tier = "a:" .. armorSlot, itemPower(itemId, item)
                 end
             end
             if key then
@@ -1097,14 +1138,17 @@ local function lootChest(chest)
     end
 
     -- Read what is actually inside before moving anything: only wanted slots
-    -- get quick-moved. If the snapshot cannot be read, take everything rather
-    -- than break looting.
-    local chestSnapshot = getChestSnapshot()
+    -- get quick-moved, and only from a snapshot that belongs to THIS chest (the
+    -- previous chest's contents linger in the client view otherwise). A
+    -- snapshot that cannot be read means take-everything rather than no loot.
+    local chestSnapshot = waitForChestSnapshot(chestId)
+    local readable = chestSnapshot ~= nil and chestSnapshot.Slots ~= nil
+        and (chestSnapshot.ChestId == nil or chestSnapshot.ChestId == chestId)
     local owned = ownedBest(getSnapshot())
     for slot = 1, CHEST_SLOTS do
         if not RUNNING or not S.armed then break end
-        local take = true
-        if chestSnapshot and chestSnapshot.Slots then
+        local take = not readable
+        if readable then
             local entry = chestSnapshot.Slots[tostring(slot)]
             local itemId = entry and entry.ItemId
             take = type(itemId) == "string" and wantsItem(itemId, owned)
