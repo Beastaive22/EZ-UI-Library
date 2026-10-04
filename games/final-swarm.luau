@@ -197,6 +197,97 @@ local function setStatus(text)
 end
 
 ----------------------------------------------------------------
+-- Network layer
+----------------------------------------------------------------
+-- The game ships leifstout's networker as a Wally package, and it ships it
+-- more than once (0.2.1 for DataService, 0.3.0 in the round place, 0.3.1 in
+-- the lobby). A tag only exists in the version that owns it, so the module
+-- indexes every version it can find and asks each one for the tag before
+-- building a client from it.
+--
+-- NetworkerClient.new waits on WaitForChild for the tag's folder, which would
+-- hang forever on a renamed tag. The folder is therefore checked first, with
+-- a short timeout, and a missing tag returns nil so a game update degrades to
+-- safe mode instead of freezing the loop.
+local netCache = {}
+local netPackages = nil
+local warnedTags = {}
+
+local function collectNetPackages()
+    local out = {}
+    local packages = find(ReplicatedStorage, "Packages", 5)
+    if not packages then return out end
+    local index = packages:FindFirstChild("_Index")
+    if not index then return out end
+    for _, child in ipairs(index:GetChildren()) do
+        if child.Name:match("^leifstout_networker@") then
+            local pkg = child:FindFirstChild("networker")
+            local remotes = pkg and pkg:FindFirstChild("_remotes")
+            if remotes then
+                local ok, mod = pcall(require, pkg)
+                if ok and type(mod) == "table" and mod.client then
+                    table.insert(out, { module = mod, remotes = remotes })
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function net(tag)
+    if type(tag) ~= "string" or tag == "" then return nil end
+    if netCache[tag] then return netCache[tag] end
+    if not netPackages then netPackages = collectNetPackages() end
+
+    for _, entry in ipairs(netPackages) do
+        local folder = entry.remotes:FindFirstChild(tag)
+        if not folder then
+            local okWait, waited = pcall(function() return entry.remotes:WaitForChild(tag, 0.5) end)
+            if okWait then folder = waited end
+        end
+        if folder then
+            -- Permissive handler: server->client events the module does not
+            -- care about must not assert.
+            local handler = setmetatable({}, { __index = function() return function() end end })
+            local ok, client = pcall(function() return entry.module.client.new(tag, handler) end)
+            if ok and client then
+                netCache[tag] = client
+                return client
+            end
+        end
+    end
+
+    if not warnedTags[tag] then
+        warnedTags[tag] = true
+        note("networker tag unavailable: " .. tag, "Warn")
+    end
+    return nil
+end
+
+local function netRemotesExists(tag)
+    if not netPackages then netPackages = collectNetPackages() end
+    for _, entry in ipairs(netPackages) do
+        if entry.remotes:FindFirstChild(tag) then return true end
+    end
+    return false
+end
+
+-- Which tags mean which kind of place. The round place has WeaponService and
+-- FinalSwarmService; the lobby has WorldSelection and QueueService.
+local TAGS_LOBBY = { "WorldSelection", "QueueService", "Settings", "CodesService", "Store", "Quests" }
+local TAGS_ROUND = { "GameService", "EnemyService", "WeaponService", "AntiCheat", "FinalSwarmService", "RoundService" }
+
+local function netDebug()
+    local count, names = 0, {}
+    for tag in pairs(netCache) do
+        count = count + 1
+        table.insert(names, tag)
+    end
+    table.sort(names)
+    return string.format("netPkgs=%d netTags=%d[%s]", netPackages and #netPackages or 0, count, table.concat(names, ","))
+end
+
+----------------------------------------------------------------
 -- Surviving a teleport
 ----------------------------------------------------------------
 local REARM_CODE = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()]]
@@ -396,6 +487,9 @@ end
 
 local handle = {
     status = function() return S.status, S.armed end,
+    net = function(tag) return net(tag) ~= nil end,
+    netDebug = netDebug,
+    placeKind = function() return S.placeKind end,
     debug = function()
         return string.format(
             "status=%s armed=%s place=%s loops=%d claims=%d picks=%d skips=%d ac=%d suppressed=%d lastPick=%s",
