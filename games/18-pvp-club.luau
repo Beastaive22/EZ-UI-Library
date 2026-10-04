@@ -89,6 +89,7 @@ local cfg = {
 	autoReequip = true,      -- auto re-equip the sword (throttled) when bow/apple/empty is out
 	autoPrestige = true,     -- lobby + level >= PrestigeConfig.RequiredLevel (200): walk to the Prestige Merchant and prestige
 	autoCrate = true,        -- auto buy + open the Gold cosmetic crate (10k coins) whenever you can afford it
+	adTag = true,            -- rewrite every player's overhead nametag (client-side): keep their tags, swap the username for the rainbow EZ Hub discord plug
 	comboMove = true,        -- drive WASD while engaged: chase, strafe, edge spacing
 	engageRange = 512,       -- chase radius — effectively the whole arena (full autoplay)
 	preferredRange = 9.35,   -- band high edge, HIT distance (aim ray -> body); clamped to Reach-0.25
@@ -2056,6 +2057,99 @@ local function crateStep(t)
 	end
 end
 
+-- discord nametag plug: rewrites every player's overhead name (client-side) to
+-- the EZ Hub discord link while KEEPING the game's tags — clan tag, prestige/
+-- level badge, rank tag ([VIP]/[MVP]/[OWNER]) and bounty suffix. Only the
+-- username part is swapped for the rainbow link. The label is game-owned; we
+-- re-apply periodically so rank/kill refreshes can't undo it.
+local AD_LINK_TEXT = "discord.gg/6kWbFG5qa7"
+local adTag = { lastAt = 0, count = 0, done = setmetatable({}, { __mode = "k" }) }
+
+local function escapeName(s)
+	return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub("\"", "&quot;"))
+end
+
+local function rainbowText(s)
+	local parts = {}
+	local n = #s
+	for i = 1, n do
+		parts[i] = '<font color="#' .. Color3.fromHSV((i - 1) / n, 1, 1):ToHex() .. '">' .. s:sub(i, i) .. "</font>"
+	end
+	return table.concat(parts)
+end
+
+local AD_LINK_RICH = rainbowText(AD_LINK_TEXT)
+
+-- swap the subject's own name (the game appends it after every tag) for the
+-- rainbow link. The name is the last plain-text run before the bounty suffix.
+local function adTagLabel(label, subject)
+	local text = label.Text
+	if text == "" or adTag.done[label] == text then
+		return text ~= ""
+	end
+	local esc = escapeName(subject:IsA("Player") and subject.DisplayName or subject.Name)
+	if esc == "" then
+		return false
+	end
+	local init, pos = nil, 1
+	while true do
+		local s = text:find(esc, pos, true)
+		if not s then
+			break
+		end
+		init = s
+		pos = s + 1
+	end
+	if not init then
+		return false
+	end
+	local repl = AD_LINK_RICH
+	local len = #esc
+	if text:sub(init + len, init + len + 6) == "</font>" then
+		-- the name sits inside its own font span: close it, then the rainbow runs
+		repl = "</font>" .. repl
+		len += 7
+	end
+	local newText = text:sub(1, init - 1) .. repl .. text:sub(init + len)
+	local ok = pcall(function()
+		label.RichText = true
+		label.Text = newText
+	end)
+	if ok then
+		adTag.done[label] = newText
+	end
+	return ok
+end
+
+local function adTagStep(t)
+	if not cfg.adTag then
+		return
+	end
+	if t - adTag.lastAt < 1.5 then
+		return
+	end
+	adTag.lastAt = t
+	local n = 0
+	local function plug(label, subject)
+		if label and label:IsA("TextLabel") and adTagLabel(label, subject) then
+			n += 1
+		end
+	end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local char = plr.Character
+		local tag = char and char:FindFirstChild("MinecraftNametag")
+		plug(tag and tag:FindFirstChild("PlayerName"), plr)
+	end
+	local bots = workspace:FindFirstChild("ArenaPvPBots")
+	if bots then
+		for _, bot in ipairs(bots:GetChildren()) do
+			local tag = bot:FindFirstChild("MinecraftNametag")
+			plug(tag and tag:FindFirstChild("PlayerName"), bot)
+		end
+	end
+	adTag.count = n
+end
+
 -- sticky-target validity: the sticky lasts 12 s, but drop it when a different
 -- enemy is right on top of us (<10 studs), when we just took a hurt (retarget
 -- the attacker instead), or when the sticky ran >25 studs farther away than
@@ -3022,6 +3116,8 @@ local function stepWorld(t, frame)
 	if cfg.autoCrate then
 		crateStep(t)
 	end
+	-- branding runs with the automation (aura-independent)
+	adTagStep(t)
 
 	if not cfg.enabled then
 		releaseMovement()
@@ -3402,6 +3498,7 @@ local function auraLoop()
 			dbg.prestigeOk = prestige.successes
 			dbg.crateResult = crate.result
 			dbg.crateOpened = crate.opened
+			dbg.adTagCount = adTag.count
 			dbg.crateCost = crate.cost
 			dbg.critState = crit.state
 			dbg.tDist = frame.distEff
@@ -3463,6 +3560,7 @@ local function saveConfig()
 			autoReequip = cfg.autoReequip,
 			autoPrestige = cfg.autoPrestige,
 			autoCrate = cfg.autoCrate,
+			adTag = cfg.adTag,
 			comboMove = cfg.comboMove,
 			engageRange = cfg.engageRange,
 			preferredRange = cfg.preferredRange,
@@ -3940,6 +4038,15 @@ local function buildUI()
 		end,
 	})
 	secTool:AddLabel("Keys: RightControl = aura, End = unload, RightShift = this window.")
+	secTool:AddToggle("AdNametag", {
+		Text = "Discord nametag plug (EZ Hub)",
+		Default = cfg.adTag,
+		Tooltip = "Rewrites every player's overhead name tag (client-side) to the rainbow EZ Hub discord link while keeping their clan/prestige/rank tags.",
+		Callback = function(v)
+			cfg.adTag = v == true
+			markDirty()
+		end,
+	})
 
 	-- addon teardown rides EZ:Destroy(): G.PvpClubTool.Unload and the window X
 	-- button both end there, and Destroy runs OnDestroy handlers first
