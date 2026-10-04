@@ -288,6 +288,143 @@ local function netDebug()
 end
 
 ----------------------------------------------------------------
+-- Shield — anti-cheat canary + hit-report suppression
+----------------------------------------------------------------
+-- Two things live here, both by shadowing one method on one networker
+-- instance (a raw field beats the metatable's __index, so nothing global is
+-- touched and a game update cannot leave a dangling hook):
+--
+--   * AntiCheat.ReportViolation — the client half of the game's anti-cheat
+--     reports the movement properties it clamps (walkSpeed, jumpHeight,
+--     hipHeight, jumpPower, platformStand, humanoidState, bodyMover). Those
+--     reports are counted locally and NOT sent. The counter is the canary:
+--     if it moves, this module's movement is too hot and must be tuned.
+--
+--   * EnemyService.ReportImpact / CharacterService.RequestEnemyAttack — the
+--     game asks the client whether an enemy attack landed. While suppression
+--     says so, those calls for our own character are dropped, which is what
+--     keeps a low-HP swarm from ever resolving a lethal hit.
+local Shield = { active = false }
+local shadowed = {}
+local impactHandlers = {}
+local notedViolation = {}
+
+local function shadowFire(clientObj, methodName, onCall)
+    if not clientObj then return false end
+    local original = clientObj.fire
+    if type(original) ~= "function" then return false end
+    clientObj.fire = function(self, name, ...)
+        if name == methodName then
+            local handled, forward = onCall(self, name, ...)
+            if handled and not forward then return nil end
+        end
+        return original(self, name, ...)
+    end
+    table.insert(shadowed, { obj = clientObj, original = original })
+    return true
+end
+
+local function hpPercent()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.MaxHealth <= 0 then return 100 end
+    return (humanoid.Health / humanoid.MaxHealth) * 100
+end
+
+local function suppressionActive()
+    local mode = flag("FinalSwarmSuppressHits", "Below HP%")
+    if mode == "Off" then return false end
+    if mode == "Always" then return true end
+    local threshold = tonumber(flag("FinalSwarmSuppressHpPercent", 65)) or 65
+    return hpPercent() <= threshold
+end
+
+local function recordViolation(key)
+    stats.acViolations = stats.acViolations + 1
+    S.lastViolation = tostring(key)
+    if not notedViolation[key] then
+        notedViolation[key] = true
+        note("anti-cheat would have reported '" .. tostring(key) .. "' — swallowed; movement is too hot", "Warn")
+    end
+end
+
+-- The game's own modules hold the networker objects they report through, and
+-- shadowing a client object this module created would be blind — the reporter
+-- calls its own table. So the shield reaches the live objects via
+-- require(<module>)._networker, which both the anti-cheat and the enemy
+-- service expose (verified live 2026-10-03; CharacterService keeps its own in
+-- a local and cannot be shadowed from outside).
+local function gameNetworker(serviceName, moduleName)
+    local shared = find(ReplicatedStorage, "Shared", 5)
+    local services = shared and shared:FindFirstChild("Services")
+    local folder = services and services:FindFirstChild(serviceName)
+    local mod = folder and folder:FindFirstChild(moduleName)
+    if not mod then return nil end
+    local ok, modTable = pcall(require, mod)
+    if not ok or type(modTable) ~= "table" then return nil end
+    return modTable._networker
+end
+
+function Shield.ensure()
+    if Shield.active then return true end
+    if os.clock() - (Shield.lastTry or 0) < 2 then return false end
+    Shield.lastTry = os.clock()
+
+    local ac = gameNetworker("AntiCheatService", "AntiCheatServiceClient")
+    if not ac then return false end -- not in a round yet (or renamed): retry later
+    Shield.active = true
+
+    shadowFire(ac, "ReportViolation", function(_, _, key)
+        recordViolation(key)
+        return true, false -- handled, never forwarded
+    end)
+
+    local enemy = gameNetworker("EnemyService", "EnemyServiceClient")
+    if enemy then
+        shadowFire(enemy, "ReportImpact", function(_, _, enemyId, position, predicted)
+            if suppressionActive() then
+                stats.suppressed = stats.suppressed + 1
+                local info = { enemyId = enemyId, position = position, predicted = predicted, heldBack = true }
+                for _, fn in ipairs(impactHandlers) do
+                    pcall(fn, info)
+                end
+                return true, false
+            end
+            return false, true
+        end)
+    else
+        note("EnemyService networker not exposed — hit suppression unavailable in this build", "Warn")
+    end
+
+    note("shield armed: anti-cheat canary" .. (enemy and " + hit suppression" or ""))
+    return true
+end
+
+function Shield.stats()
+    return {
+        acViolations = stats.acViolations,
+        suppressed = stats.suppressed,
+        active = Shield.active,
+        lastViolation = S.lastViolation,
+        suppressionActive = suppressionActive(),
+    }
+end
+
+function Shield.disarm()
+    for _, entry in ipairs(shadowed) do
+        pcall(function()
+            if entry.obj then entry.obj.fire = nil end
+        end)
+    end
+    shadowed = {}
+    Shield.active = false
+end
+
+function Shield.onImpactReport(fn)
+    if type(fn) == "function" then table.insert(impactHandlers, fn) end
+end
+
+----------------------------------------------------------------
 -- Surviving a teleport
 ----------------------------------------------------------------
 local REARM_CODE = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()]]
@@ -425,7 +562,9 @@ end
 -- Loop
 ----------------------------------------------------------------
 local function stepFarm()
-    -- Task 1 keeps this empty: components land in later tasks.
+    -- Task 3 keeps this to the shield warm-up; the farm components land in
+    -- later tasks and this is where their tick order will live.
+    Shield.ensure()
     S.lastTick = os.clock()
 end
 
@@ -479,6 +618,7 @@ local function destroy(keepIntent)
         pcall(function() conn:Disconnect() end)
     end
     Conns = {}
+    pcall(function() Shield.disarm() end)
     local g = getgenv and getgenv()
     if g and g.__FINALSWARM_FARM then
         g.__FINALSWARM_FARM = nil
@@ -490,6 +630,7 @@ local handle = {
     net = function(tag) return net(tag) ~= nil end,
     netDebug = netDebug,
     placeKind = function() return S.placeKind end,
+    shield = function() return Shield.stats() end,
     debug = function()
         return string.format(
             "status=%s armed=%s place=%s loops=%d claims=%d picks=%d skips=%d ac=%d suppressed=%d lastPick=%s",
