@@ -119,6 +119,11 @@ local GAMES = {
 		universes = { 9551044479 },               -- Evolution Studio Games
 		places = { 99521272836282, 79787558257549 }, -- lobby, round
 	},
+	{
+		slug = "18-pvp-club", name = "1.8 PVP Club", note = "melee aura (input mode)",
+		universes = { 10764891927 },              -- 1.8 Club
+		places = { 102518817130593 },
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
