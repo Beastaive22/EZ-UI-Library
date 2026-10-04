@@ -114,6 +114,11 @@ local GAMES = {
 		slug = "survivor-games", name = "Survivor Games", note = "autofarm",
 		universes = { 10120569105 },              -- CreatorVerse
 	},
+	{
+		slug = "final-swarm", name = "Final Swarm", note = "autofarm",
+		universes = { 9551044479 },               -- Evolution Studio Games
+		places = { 99521272836282, 79787558257549 }, -- lobby, round
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
