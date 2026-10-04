@@ -2060,36 +2060,37 @@ end
 -- discord nametag plug: rewrites every player's overhead name (client-side) to
 -- the EZ Hub discord link while KEEPING the game's tags — clan tag, prestige/
 -- level badge, rank tag ([VIP]/[MVP]/[OWNER]) and bounty suffix. Only the
--- username part is swapped for the rainbow link. The label is game-owned; we
--- re-apply periodically so rank/kill refreshes can't undo it.
+-- username part is swapped for the rainbow link, which flows left → right.
+-- The label is game-owned, so we repair it the same frame the game rewrites it.
 local AD_LINK_TEXT = "discord.gg/6kWbFG5qa7"
-local adTag = { lastAt = 0, count = 0, done = setmetatable({}, { __mode = "k" }) }
+local AD_ANIM_DT = 1 / 20   -- rainbow repaint interval (20 fps)
+local AD_ANIM_SPEED = 0.7   -- hue cycles per second, flowing left → right
+local adTag = { lastAt = 0, count = 0, phase = 0, rec = setmetatable({}, { __mode = "k" }) }
 
 local function escapeName(s)
 	return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub("\"", "&quot;"))
 end
 
-local function rainbowText(s)
+local function rainbowText(s, phase)
 	local parts = {}
 	local n = #s
 	for i = 1, n do
-		parts[i] = '<font color="#' .. Color3.fromHSV((i - 1) / n, 1, 1):ToHex() .. '">' .. s:sub(i, i) .. "</font>"
+		local hue = ((i - 1) / n + phase) % 1
+		parts[i] = '<font color="#' .. Color3.fromHSV(hue, 1, 1):ToHex() .. '">' .. s:sub(i, i) .. "</font>"
 	end
 	return table.concat(parts)
 end
 
-local AD_LINK_RICH = rainbowText(AD_LINK_TEXT)
-
--- swap the subject's own name (the game appends it after every tag) for the
--- rainbow link. The name is the last plain-text run before the bounty suffix.
-local function adTagLabel(label, subject)
+-- split a game-written label into the part before the name and the part after
+-- it (the name is the last plain-text run before the bounty suffix).
+local function adTagSplit(label, subject)
 	local text = label.Text
-	if text == "" or adTag.done[label] == text then
-		return text ~= ""
+	if text == "" then
+		return nil
 	end
 	local esc = escapeName(subject:IsA("Player") and subject.DisplayName or subject.Name)
 	if esc == "" then
-		return false
+		return nil
 	end
 	local init, pos = nil, 1
 	while true do
@@ -2101,37 +2102,53 @@ local function adTagLabel(label, subject)
 		pos = s + 1
 	end
 	if not init then
-		return false
+		return nil
 	end
-	local repl = AD_LINK_RICH
+	local pre = text:sub(1, init - 1)
 	local len = #esc
 	if text:sub(init + len, init + len + 6) == "</font>" then
 		-- the name sits inside its own font span: close it, then the rainbow runs
-		repl = "</font>" .. repl
+		pre = pre .. "</font>"
 		len += 7
 	end
-	local newText = text:sub(1, init - 1) .. repl .. text:sub(init + len)
-	local ok = pcall(function()
-		label.RichText = true
-		label.Text = newText
-	end)
-	if ok then
-		adTag.done[label] = newText
-	end
-	return ok
+	return { pre = pre, post = text:sub(init + len) }
 end
 
 local function adTagStep(t)
 	if not cfg.adTag then
 		return
 	end
-	if t - adTag.lastAt < 1.5 then
-		return
+	local repaint = t - adTag.lastAt >= AD_ANIM_DT
+	if repaint then
+		adTag.phase = (adTag.phase - (t - adTag.lastAt) * AD_ANIM_SPEED) % 1
+		adTag.lastAt = t
 	end
-	adTag.lastAt = t
 	local n = 0
 	local function plug(label, subject)
-		if label and label:IsA("TextLabel") and adTagLabel(label, subject) then
+		if not (label and label:IsA("TextLabel")) then
+			return
+		end
+		local rec = adTag.rec[label]
+		if not repaint and rec and label.Text == rec.text then
+			n += 1
+			return
+		end
+		if not rec or label.Text ~= rec.text then
+			-- the game wrote (or rewrote) this label: re-split its fresh text
+			local fresh = adTagSplit(label, subject)
+			if not fresh then
+				return
+			end
+			rec = fresh
+			adTag.rec[label] = rec
+		end
+		local text = rec.pre .. rainbowText(AD_LINK_TEXT, adTag.phase) .. rec.post
+		local ok = pcall(function()
+			label.RichText = true
+			label.Text = text
+		end)
+		if ok then
+			rec.text = text
 			n += 1
 		end
 	end
@@ -4041,7 +4058,7 @@ local function buildUI()
 	secTool:AddToggle("AdNametag", {
 		Text = "Discord nametag plug (EZ Hub)",
 		Default = cfg.adTag,
-		Tooltip = "Rewrites every player's overhead name tag (client-side) to the rainbow EZ Hub discord link while keeping their clan/prestige/rank tags.",
+		Tooltip = "Rewrites every player's overhead name tag (client-side) to the animated rainbow EZ Hub discord link while keeping their clan/prestige/rank tags.",
 		Callback = function(v)
 			cfg.adTag = v == true
 			markDirty()
