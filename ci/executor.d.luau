@@ -21,6 +21,10 @@ declare function request(options: { [string]: any }): { [string]: any }
 declare function http_request(options: { [string]: any }): { [string]: any }
 declare function firesignal(signal: RBXScriptSignal, ...: any): ()
 declare function getconnections(signal: RBXScriptSignal): { any }
+-- final-swarm.luau drives the queue re-arm and proximity prompts.
+declare function queue_on_teleport(code: string): ()
+declare function queueonteleport(code: string): ()
+declare function fireproximityprompt(prompt: Instance): ()
 
 -- the library feature-detects multiple crypt shapes at runtime, so keep it loose
 declare crypt: any
