@@ -425,6 +425,193 @@ function Shield.onImpactReport(fn)
 end
 
 ----------------------------------------------------------------
+-- SafeMove — CFrame movement, fly, noclip
+----------------------------------------------------------------
+-- The in-round anti-cheat watches humanoid properties and states, so this
+-- moves the HumanoidRootPart directly: velocity zeroed, CFrame stepped at a
+-- speed budget, position updates rate-limited (the same shape the Survivor
+-- module uses, which runs for hours without a report). Fly is the same step
+-- with a vertical component — the humanoid is never put into the Flying
+-- state — and noclip just clears CanCollide on the character's parts, a
+-- property nothing in the anti-cheat's list touches.
+local SafeMove = {
+    target = nil,
+    accum = 0,
+    progressAt = 0,
+    lastDistance = nil,
+    sideFlip = 1,
+    fly = false,
+}
+local collideOriginals = {}
+local noclipOn = false
+
+local function rayParams()
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    local character = LocalPlayer.Character
+    if character then table.insert(ignore, character) end
+    params.FilterDescendantsInstances = ignore
+    return params
+end
+
+local function groundY(x, z, fromY)
+    local origin = Vector3.new(x, fromY, z)
+    local hit = workspace:Raycast(origin, Vector3.new(0, -600, 0), rayParams())
+    return hit and hit.Position.Y or nil
+end
+
+function SafeMove.setNoclip(on)
+    local character = LocalPlayer.Character
+    noclipOn = on and true or false
+    if not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if noclipOn then
+                if collideOriginals[part] == nil then
+                    collideOriginals[part] = part.CanCollide
+                end
+                part.CanCollide = false
+            elseif collideOriginals[part] ~= nil then
+                pcall(function() part.CanCollide = collideOriginals[part] end)
+                collideOriginals[part] = nil
+            end
+        end
+    end
+end
+
+local function restoreNoclip()
+    SafeMove.setNoclip(false)
+end
+
+function SafeMove.stop()
+    SafeMove.target = nil
+    SafeMove.accum = 0
+    SafeMove.lastDistance = nil
+    restoreNoclip()
+    -- Never leave the character floating: if it is airborne and fly is off,
+    -- walk it down to the ground with the same stepper.
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not (root and humanoid) then return end
+    local y = groundY(root.Position.X, root.Position.Z, root.Position.Y)
+    if y and root.Position.Y - y > 3 then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.CFrame = CFrame.new(Vector3.new(root.Position.X, y + 3, root.Position.Z)) * (root.CFrame - root.CFrame.Position)
+    end
+end
+
+function SafeMove.moveTo(target)
+    if typeof(target) ~= "Vector3" then return false end
+    SafeMove.target = target
+    SafeMove.lastDistance = nil
+    SafeMove.progressAt = os.clock()
+    return true
+end
+
+function SafeMove.isFlyActive() return SafeMove.fly end
+
+local function stepOnce(dt)
+    local target = SafeMove.target
+    if not target then return end
+
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not (root and humanoid) then return end
+
+    local flyFlag = flag("FinalSwarmFly", false) == true
+    SafeMove.fly = flyFlag
+    if flag("FinalSwarmNoclip", false) == true then
+        if not SafeMove.warnedNoclip then
+            SafeMove.warnedNoclip = true
+            note("noclip is detected: watchRigCollision restores CanCollide on rig parts and reports 'canCollide' (the shield swallows it). CFrame travel does not need noclip.", "Warn")
+        end
+        noclipOn = true
+        -- Re-applied every tick: something in this game rewrites CanCollide on
+        -- character parts within ~0.6 s (observed live; the reverter is not
+        -- identified). CFrame travel does not need collisions cleared, so this
+        -- is insurance, not a load-bearing mode.
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if collideOriginals[part] == nil then
+                    collideOriginals[part] = part.CanCollide
+                end
+                part.CanCollide = false
+            end
+        end
+    elseif noclipOn then
+        restoreNoclip()
+    end
+
+    local position = root.Position
+    local delta = Vector3.new(target.X - position.X, 0, target.Z - position.Z)
+    if flyFlag then
+        delta = Vector3.new(target.X - position.X, target.Y - position.Y, target.Z - position.Z)
+    end
+    local distance = delta.Magnitude
+    local speed = math.clamp(tonumber(flag("FinalSwarmSpeed", 45)) or 45, 5, 120)
+    local stepLength = math.min(distance, speed * dt)
+
+    -- Stuck detection: fly and noclip aside, a wall between here and there
+    -- looks exactly like standing still, so side-step when progress stops.
+    if SafeMove.lastDistance and distance > 4 and SafeMove.lastDistance - distance < 0.5 then
+        if os.clock() - SafeMove.progressAt > 1.5 then
+            SafeMove.sideFlip = -SafeMove.sideFlip
+            local side = Vector3.new(-delta.Z, 0, delta.X).Unit * (6 * SafeMove.sideFlip)
+            SafeMove.target = target + side
+            SafeMove.progressAt = os.clock()
+        end
+    else
+        SafeMove.progressAt = os.clock()
+    end
+    SafeMove.lastDistance = distance
+
+    if stepLength > 0.01 then
+        local direction = delta.Unit
+        local newPosition = position + direction * stepLength
+        if not flyFlag then
+            -- Horizontal travel only; if there is nothing under us, descend
+            -- toward the target instead of hovering.
+            local y = groundY(newPosition.X, newPosition.Z, position.Y + 4)
+            if y then
+                newPosition = Vector3.new(newPosition.X, math.max(y + 3, position.Y - 8), newPosition.Z)
+            elseif humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+                newPosition = Vector3.new(newPosition.X, position.Y - math.min(stepLength, 4), newPosition.Z)
+            end
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+        -- Keep the character's own facing: the weapons aim themselves, and
+        -- spinning the body would fight the camera.
+        root.CFrame = CFrame.new(newPosition) * (root.CFrame - root.CFrame.Position)
+    end
+end
+
+function SafeMove.tick(dt)
+    local rate = math.clamp(tonumber(flag("FinalSwarmPositionRate", 30)) or 30, 5, 60)
+    SafeMove.accum = SafeMove.accum + dt
+    local interval = 1 / rate
+    if SafeMove.accum < interval then return end
+    local elapsed = SafeMove.accum
+    SafeMove.accum = 0
+    stepOnce(elapsed)
+end
+
+function SafeMove.debug()
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local target = SafeMove.target
+    return string.format(
+        "fly=%s noclip=%s pos=%s target=%s dist=%s",
+        tostring(SafeMove.fly), tostring(noclipOn),
+        root and string.format("%.0f,%.0f,%.0f", root.Position.X, root.Position.Y, root.Position.Z) or "nil",
+        target and string.format("%.0f,%.0f,%.0f", target.X, target.Y, target.Z) or "nil",
+        (target and root) and string.format("%.0f", (target - root.Position).Magnitude) or "-"
+    )
+end
+
+----------------------------------------------------------------
 -- Surviving a teleport
 ----------------------------------------------------------------
 local REARM_CODE = [[loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Library/main/loader.lua"))()]]
@@ -562,10 +749,14 @@ end
 -- Loop
 ----------------------------------------------------------------
 local function stepFarm()
-    -- Task 3 keeps this to the shield warm-up; the farm components land in
-    -- later tasks and this is where their tick order will live.
+    local now = os.clock()
+    local dt = now - (S.lastTick or now)
+    if dt <= 0 or dt > 1 then dt = 0.05 end
+
     Shield.ensure()
-    S.lastTick = os.clock()
+    SafeMove.tick(dt)
+
+    S.lastTick = now
 end
 
 local function mainLoop()
@@ -618,6 +809,7 @@ local function destroy(keepIntent)
         pcall(function() conn:Disconnect() end)
     end
     Conns = {}
+    pcall(function() SafeMove.stop() end)
     pcall(function() Shield.disarm() end)
     local g = getgenv and getgenv()
     if g and g.__FINALSWARM_FARM then
@@ -627,6 +819,20 @@ end
 
 local handle = {
     status = function() return S.status, S.armed end,
+    moveTo = function(x, y, z) return SafeMove.moveTo(Vector3.new(x, y, z)) end,
+    safe = SafeMove.debug,
+    flags = function()
+        return {
+            fly = flag("FinalSwarmFly", false),
+            noclip = flag("FinalSwarmNoclip", false),
+            speed = flag("FinalSwarmSpeed", 45),
+            rate = flag("FinalSwarmPositionRate", 30),
+        }
+    end,
+    -- Test hook, deliberately named: flags that have no UI element yet cannot
+    -- be driven through a handle. T9 adds the real elements — use those
+    -- (or QuickBar) once they exist, never EZ.Flags writes.
+    setFlagTest = function(id, value) EZ.Flags[id] = value end,
     net = function(tag) return net(tag) ~= nil end,
     netDebug = netDebug,
     placeKind = function() return S.placeKind end,
