@@ -6,17 +6,15 @@ if game.GameId ~= 10764891927 then return end
     Built on EZ-UI-Library (https://github.com/Beastaive22/EZ-UI-Library)
     Executor: Potassium / sUNC
 
-    v2.6 (2026-10-04). Input: client-level only (VIM keys + in-client mouse
-    clicks) — works unfocused, never leaks clicks; input pauses while the
-    Roblox menu is open or a chat box is focused. Combat: frame-driven loop,
-    click governor (<=14 CPS), continuous swings, pressure movement,
-    intercept chase, reactive strafe, knockback jump-reset, w-tap, crit
-    machine, fight-mode pathfinder detour + wall-slide + tall-obstacle
-    classification. Survival: flee+eat, auto re-equip. Automation: auto
-    prestige (level 200+ anywhere -> teleports beside the Prestige Merchant
-    first (respawn fallback), then fires the prompt remotely, captures the
-    server token, sends the game's own Confirm) and auto Gold crate
-    (10k coins, verified spend). UI: Combat / Movement / Survival /
+    v2.8 (2026-10-04). Input: client-level only (VIM keys + in-client mouse
+    clicks) — works unfocused; pauses while the Roblox menu/chat is focused.
+    Combat: frame-driven loop, click governor (<=14 CPS), continuous swings,
+    pressure movement, intercept chase, reactive strafe, knockback
+    jump-reset, w-tap, crit machine, fight-mode nav detour + wall-slide.
+    Survival: flee+eat, auto re-equip. AUTOMATION (own toggles, runs with the
+    aura OFF): auto prestige (200+ -> go-home tp/respawn -> tp to the
+    Prestige Merchant doorstep -> remote prompt -> server token -> Confirm)
+    and auto Gold crate (10k coins). UI: Combat / Movement / Survival /
     Automation / Building / Stats / EZ built-in Settings.
     Tracer: PvpClubToolDebug.ev.
 ]]
@@ -1655,13 +1653,32 @@ local function prestigeStep(char, hum, hrp)
 			return false
 		end
 		-- requirement met but we're in the arena: go home to the lobby first.
-		-- Teleport to the floor beside the Prestige Merchant (verified live in
-		-- this environment: the CFrame write sticks). If the write fails — or
-		-- three tries in a row don't stick — fall back to a respawn.
+		-- Live-verified game rules: a CFrame teleport sticks only in the lobby;
+		-- cross-zone teleports from the arena are reverted by the server within
+		-- a fraction of a second (the write "succeeds", the position never
+		-- changes). So: one teleport attempt, judge stickiness within ~1 s, then
+		-- fall back to the only game-sanctioned way back mid-arena — a respawn
+		-- at SkySpawn. Everything else stays paused while this runs.
 		if hrp.Position.Y < cfg.arenaY then
-			if t - (prestige.homeAt or -99) > 8 then
+			if prestige.tpAt then
+				if t - prestige.tpAt < 0.9 then
+					return true -- letting the teleport settle
+				end
+				prestige.tpAt = nil
+				if hrp.Position.Y < cfg.arenaY then
+					local hum0 = hum or char:FindFirstChildOfClass("Humanoid")
+					pcall(function()
+						if hum0 then
+							hum0.Health = 0
+						end
+					end)
+					prestige.result = "respawn-home"
+					prestige.lastHomeAt = t
+					traceEvent("prestige:respawn to lobby", 1)
+					return true
+				end
+			elseif t - (prestige.lastHomeAt or -99) > 12 and t - (prestige.homeAt or -99) > 8 then
 				prestige.homeAt = t
-				prestige.homeTries = (prestige.homeTries or 0) + 1
 				prestige.result = "gohome"
 				local npc = prestigePrompt()
 				local npcPart = npc and npc.Parent
@@ -1671,29 +1688,43 @@ local function prestigeStep(char, hum, hrp)
 				else
 					target = Vector3.new(363, 84.5, -9)
 				end
-				local okTp = false
-				if prestige.homeTries < 3 then
-					okTp = pcall(function()
-						hrp.CFrame = CFrame.new(target)
-					end)
-				end
-				traceEvent("prestige:teleport to lobby " .. tostring(okTp), 1)
-				if not okTp then
-					local hum0 = hum or char:FindFirstChildOfClass("Humanoid")
-					pcall(function()
-						if hum0 then
-							hum0.Health = 0
-						end
-					end)
-					prestige.homeTries = 0
-				end
+				local okTp = pcall(function()
+					hrp.CFrame = CFrame.new(target)
+				end)
+				prestige.tpAt = t
+				traceEvent("prestige:teleport attempt " .. tostring(okTp), 1)
+				return true
 			end
-			return true
+			if hrp.Position.Y < cfg.arenaY then
+				return true
+			end
 		end
 		prestige.homeTries = nil
 		local promptNow = prestigePrompt()
 		if not promptNow then
 			return false
+		end
+		-- in the lobby: stand AT the merchant before firing — the server's
+		-- prompt is proximity-checked (fired from across the lobby it never
+		-- answers). Teleports inside the lobby stick (verified live), so no
+		-- walking: one little tp puts us on its doorstep.
+		local npcPart0 = promptNow.Parent
+		if npcPart0 and npcPart0:IsA("BasePart") then
+			local flat0 = ((npcPart0.Position - hrp.Position) * Vector3.new(1, 0, 1)).Magnitude
+			if flat0 > 9 then
+				if t - (prestige.gotoAt or -99) > 1.5 then
+					prestige.gotoAt = t
+					prestige.result = "tomarket"
+					pcall(function()
+						hrp.CFrame = CFrame.new(npcPart0.Position + Vector3.new(8, 1.2, 0.6))
+					end)
+					traceEvent("prestige:goto merchant (lobby tp)", 1)
+				end
+				return true
+			end
+			if t - (prestige.gotoAt or -99) < 0.25 then
+				return true -- let the tp settle a beat before firing the prompt
+			end
 		end
 		-- direct confirm failed once before -> walk-up UI flow this round
 		-- (lobby only: the NPC lives there; elsewhere retry later)
@@ -3008,20 +3039,37 @@ local lastHittableAt = 0
 local lastLOSAt = 0
 
 local function stepWorld(t, frame)
+	local char, hum, hrp = getCharacter()
+	if not char then
+		releaseMovement()
+		if not cfg.enabled then
+			crit.state = "NORMAL"
+			wtap.phase = "idle"
+		end
+		return false
+	end
+	frame.char, frame.hum, frame.hrp = char, hum, hrp
+	frame.grounded = char:GetAttribute("MinecraftGrounded") ~= false
+	frame.engageState = "none"
+
+	-- AUTOMATION runs on its own toggles, independent of the aura master
+	-- switch: auto prestige and the gold crate keep working with the aura off.
+	-- Auto prestige fires from ANY zone the moment the level requirement is
+	-- met; go-home (teleport/respawn), the merchant prompt and the Confirm all
+	-- run inside prestigeStep. The Gold crate is cooldown-gated, one in flight.
+	if cfg.autoPrestige and prestigeStep(char, hum, hrp) then
+		return false
+	end
+	if cfg.autoCrate then
+		crateStep(t)
+	end
+
 	if not cfg.enabled then
 		releaseMovement()
 		crit.state = "NORMAL"
 		wtap.phase = "idle"
 		return false
 	end
-	local char, hum, hrp = getCharacter()
-	if not char then
-		releaseMovement()
-		return false
-	end
-	frame.char, frame.hum, frame.hrp = char, hum, hrp
-	frame.grounded = char:GetAttribute("MinecraftGrounded") ~= false
-	frame.engageState = "none"
 
 	if char:GetAttribute("EatingApple") or char:GetAttribute("BowDrawStarted") then
 		-- survival eat in progress (ours or the player's): keep fleeing + eating
@@ -3041,18 +3089,6 @@ local function stepWorld(t, frame)
 	if cfg.autoEat and hum.Health < cfg.eatHpThreshold and hasGoldenApple() and char:GetAttribute("BowDrawStarted") ~= true then
 		survivalStep(char, hum, hrp)
 		return false
-	end
-
-	-- auto prestige: fires from ANY zone the moment the level requirement is
-	-- met (the prompt is triggered remotely, no lobby trip needed). The walk-up
-	-- fallback inside prestigeStep only ever runs in the lobby.
-	if cfg.autoPrestige and prestigeStep(char, hum, hrp) then
-		return false
-	end
-
-	-- auto Gold crate: any zone; one in flight at a time, cooldown-gated
-	if cfg.autoCrate then
-		crateStep(t)
 	end
 
 	-- safe zone (lobby): never attack up here; optionally walk to the drop hole
