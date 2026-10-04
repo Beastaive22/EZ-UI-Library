@@ -1,24 +1,6 @@
 -- Game guard: this module only runs in "1.8 PVP Club" (universe 10764891927).
 if game.GameId ~= 10764891927 then return end
 
---[[
-    1.8 PVP Club — melee aura (smart autoplay + MC-style building)
-    Built on EZ-UI-Library (https://github.com/Beastaive22/EZ-UI-Library)
-    Executor: Potassium / sUNC
-
-    v2.8 (2026-10-04). Input: client-level only (VIM keys + in-client mouse
-    clicks) — works unfocused; pauses while the Roblox menu/chat is focused.
-    Combat: frame-driven loop, click governor (<=14 CPS), continuous swings,
-    pressure movement, intercept chase, reactive strafe, knockback
-    jump-reset, w-tap, crit machine, fight-mode nav detour + wall-slide.
-    Survival: flee+eat, auto re-equip. AUTOMATION (own toggles, runs with the
-    aura OFF): auto prestige (200+ -> go-home tp/respawn -> tp to the
-    Prestige Merchant doorstep -> remote prompt -> server token -> Confirm)
-    and auto Gold crate (10k coins). UI: Combat / Movement / Survival /
-    Automation / Building / Stats / EZ built-in Settings.
-    Tracer: PvpClubToolDebug.ev.
-]]
-
 --!nocheck
 -- pvp-tool.luau — "1.8 PVP Club" melee core (kill aura via simulated input).
 -- Executor: Potassium / sUNC. Control surface: getgenv().PvpClubTool
@@ -1652,52 +1634,29 @@ local function prestigeStep(char, hum, hrp)
 		if type(lvl) ~= "number" or lvl < prestigeRequiredLevel() then
 			return false
 		end
-		-- requirement met but we're in the arena: go home to the lobby first.
-		-- Live-verified game rules: a CFrame teleport sticks only in the lobby;
-		-- cross-zone teleports from the arena are reverted by the server within
-		-- a fraction of a second (the write "succeeds", the position never
-		-- changes). So: one teleport attempt, judge stickiness within ~1 s, then
-		-- fall back to the only game-sanctioned way back mid-arena — a respawn
-		-- at SkySpawn. Everything else stays paused while this runs.
+		-- requirement met but not in the lobby: RESET the character — it
+		-- respawns at SkySpawn in about a second (BreakJoints, verified live);
+		-- the merchant teleport + prestige then run from there. Cross-zone
+		-- teleports are server-reverted, so this is the only door home
+		-- mid-arena. Everything else stays paused while this runs.
 		if hrp.Position.Y < cfg.arenaY then
-			if prestige.tpAt then
-				if t - prestige.tpAt < 0.9 then
-					return true -- letting the teleport settle
-				end
-				prestige.tpAt = nil
-				if hrp.Position.Y < cfg.arenaY then
-					local hum0 = hum or char:FindFirstChildOfClass("Humanoid")
+			if t - (prestige.lastHomeAt or -99) > 10 then
+				prestige.lastHomeAt = t
+				prestige.result = "respawn-home"
+				local okR = pcall(function()
+					char:BreakJoints()
+				end)
+				if not okR then
 					pcall(function()
+						local hum0 = hum or char:FindFirstChildOfClass("Humanoid")
 						if hum0 then
 							hum0.Health = 0
 						end
 					end)
-					prestige.result = "respawn-home"
-					prestige.lastHomeAt = t
-					traceEvent("prestige:respawn to lobby", 1)
-					return true
 				end
-			elseif t - (prestige.lastHomeAt or -99) > 12 and t - (prestige.homeAt or -99) > 8 then
-				prestige.homeAt = t
-				prestige.result = "gohome"
-				local npc = prestigePrompt()
-				local npcPart = npc and npc.Parent
-				local target
-				if npcPart and npcPart:IsA("BasePart") then
-					target = npcPart.Position + Vector3.new(8, 1.2, 0.6)
-				else
-					target = Vector3.new(363, 84.5, -9)
-				end
-				local okTp = pcall(function()
-					hrp.CFrame = CFrame.new(target)
-				end)
-				prestige.tpAt = t
-				traceEvent("prestige:teleport attempt " .. tostring(okTp), 1)
-				return true
+				traceEvent("prestige:reset character -> lobby", 1)
 			end
-			if hrp.Position.Y < cfg.arenaY then
-				return true
-			end
+			return true
 		end
 		prestige.homeTries = nil
 		local promptNow = prestigePrompt()
