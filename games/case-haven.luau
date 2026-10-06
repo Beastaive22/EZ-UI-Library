@@ -29,7 +29,10 @@ if game.GameId ~= 10141042381 then return end
     OpenCase.Amount). A main toggle arms rolling: nothing is sent while
     it is off. A separate toggle also rolls the highest Level N Case your
     level has unlocked (the level crates unlock at level N; the game's
-    own active-case tracker matches the same rule). Nothing else.
+    own active-case tracker matches the same rule). Another toggle rolls
+    the most expensive crate the wallet covers at the current amount
+    (price * amount <= wallet), so raising the amount automatically
+    steps down to a cheaper crate. Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -130,6 +133,29 @@ local function highestUnlockedLevelCrate()
     return best
 end
 
+-- Most expensive crate the wallet can cover at the current amount: the
+-- rule is price * amount <= wallet, so with amount 4 and $100 the $25
+-- crate wins, not the $100 one. Prices are read live every call (this
+-- game drifts them); the Free Case (price 0) is the natural fallback.
+local function mostExpensiveAffordable(amount)
+    local walletChild = lp:FindFirstChild("Wallet")
+    local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value
+    if type(wallet) ~= "number" then return nil end
+    local best
+    for _, case in ipairs(Cases:GetChildren()) do
+        if case:IsA("StringValue") then
+            local priceChild = case:FindFirstChild("Price")
+            local price = priceChild and priceChild:IsA("NumberValue") and priceChild.Value
+            if type(price) == "number" and price * amount <= wallet then
+                if not best or price > best.price then
+                    best = { name = case.Name, price = price }
+                end
+            end
+        end
+    end
+    return best
+end
+
 ----------------------------------------------------------------
 -- Window
 ----------------------------------------------------------------
@@ -215,6 +241,12 @@ secSpin:AddToggle("LevelCase", {
     Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked (Level 60 Case at level 65, next at 70). Shares the amount and delay sliders; if that crate is also picked in the dropdown it rolls twice.",
 })
 
+secSpin:AddToggle("ExpensiveCase", {
+    Text = "Also roll most expensive affordable crate",
+    Default = false,
+    Tooltip = "Each tick also rolls the priciest crate the wallet covers at the current amount: price x amount <= wallet. With amount 4 and $100 that is the $25 crate, not the $100 one. Falls back to the Free Case when nothing else fits; if it is also picked in the dropdown it rolls twice.",
+})
+
 secSpin:AddSlider("SpinAmount", {
     Text = "Amount per roll",
     Min = 1, Max = 10, Default = 1, Increment = 1,
@@ -251,6 +283,14 @@ task.spawn(function()
                 if best then
                     pcall(function()
                         MainEvent:FireServer("OpenCase", best.name, amount)
+                    end)
+                end
+            end
+            if EZ.Flags.ExpensiveCase == true then
+                local pick = mostExpensiveAffordable(amount)
+                if pick then
+                    pcall(function()
+                        MainEvent:FireServer("OpenCase", pick.name, amount)
                     end)
                 end
             end
