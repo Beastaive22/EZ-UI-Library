@@ -44,9 +44,9 @@ if game.GameId ~= 10141042381 then return end
     past their 6-minute mark). An Upgrades tab auto-buys available
     upgrade-tree nodes straight through MainFunction:InvokeServer (the
     exact call the tree's buy buttons make) - no menu opening, camera
-    movement or game UI effects; priority upgrades selected in a
-    searchable dropdown are bought first, the rest cheapest first.
-    Nothing else.
+    movement or game UI effects; a Buy priority dropdown picks the order
+    (cheapest / most expensive first, or a family like Faster rolls or
+    Luck climbs first, the rest cheapest first). Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -559,58 +559,45 @@ local secUp = TabUpgrades:AddSection("Auto Upgrade")
 secUp:AddToggle("AutoUpgrades", {
     Text = "Auto buy upgrades",
     Default = false,
-    Tooltip = "Buys one available upgrade per tick from the upgrade tree, fired straight through the game's own remote. No menu opening, camera movement or UI effects. Priority upgrades below are bought first; everything else cheapest first.",
+    Tooltip = "Buys one available upgrade per tick from the upgrade tree, fired straight through the game's own remote. No menu opening, camera movement or UI effects. The Buy priority dropdown decides the order (e.g. Faster rolls first climbs the roll-speed family before anything else).",
 })
 
-local upgradeRows = {}
-for _, def in ipairs(RsUpgrades:GetChildren()) do
-    if def:IsA("NumberValue") then
-        local costChild = def:FindFirstChild("Cost")
-        upgradeRows[#upgradeRows + 1] = {
-            name = def.Name,
-            cost = costChild and costChild:IsA("NumberValue") and costChild.Value or math.huge,
-        }
-    end
-end
-table.sort(upgradeRows, function(a, b)
-    if a.cost ~= b.cost then return a.cost < b.cost end
-    return a.name < b.name
-end)
+-- Priority strategies: the chosen family is bought first (cheapest first
+-- within it), then everything else cheapest first. Family names are
+-- matched against node names ("Faster Rolls 3" -> rolls, "Super Luck 2"
+-- -> luck, ...).
+local UPGRADE_STRATEGIES = {
+    "Cheapest first",
+    "Most expensive first",
+    "Luck upgrades first",
+    "Faster rolls first",
+    "Case slots first",
+    "Inventory space first",
+    "Bank upgrades first",
+    "XP boosts first",
+    "Walk speed first",
+    "Feature unlocks first",
+}
 
-local upgradeDisplays = {}
-local upgradeDisplayToName = {}
-for i, row in ipairs(upgradeRows) do
-    upgradeDisplays[i] = row.name .. " ($" .. fmtPrice(row.cost) .. ")"
-    upgradeDisplayToName[upgradeDisplays[i]] = row.name
-end
+local STRATEGY_MATCH = {
+    ["Luck upgrades first"] = function(name) return name:find("Luck", 1, true) ~= nil end,
+    ["Faster rolls first"] = function(name) return name:find("Roll", 1, true) ~= nil end,
+    ["Case slots first"] = function(name) return name:find("Case Slot", 1, true) ~= nil end,
+    ["Inventory space first"] = function(name) return name:find("Inventory Space", 1, true) ~= nil end,
+    ["Bank upgrades first"] = function(name) return name:find("Bank", 1, true) ~= nil end,
+    ["XP boosts first"] = function(name) return name:find("XP", 1, true) ~= nil end,
+    ["Walk speed first"] = function(name) return name:find("Walk Speed", 1, true) ~= nil end,
+    ["Feature unlocks first"] = function(name)
+        return name == "Auto Roll" or name == "Teleporter" or name == "Trade Ups" or name == "Upgrader"
+    end,
+}
 
-local upgradePreferred = {}
-local function setUpgradePreferred(v)
-    table.clear(upgradePreferred)
-    if type(v) ~= "table" then return end
-    if type(v[1]) == "string" then
-        for _, display in ipairs(v) do
-            if upgradeDisplayToName[display] then
-                upgradePreferred[upgradeDisplayToName[display]] = true
-            end
-        end
-    else
-        for display, on in pairs(v) do
-            if on == true and upgradeDisplayToName[display] then
-                upgradePreferred[upgradeDisplayToName[display]] = true
-            end
-        end
-    end
-end
-
-secUp:AddDropdown("UpgradePriority", {
-    Text = "Priority upgrades (bought first)",
-    Values = upgradeDisplays,
-    Multi = true,
-    Searchable = true,
-    VisibleItems = 10,
-    Tooltip = "Selected upgrades are bought before everything else (cheapest first among them). Leave empty to buy everything cheapest first.",
-    Callback = setUpgradePreferred,
+secUp:AddDropdown("UpgradePriorityMode", {
+    Text = "Buy priority",
+    Values = UPGRADE_STRATEGIES,
+    Default = "Cheapest first",
+    VisibleItems = 6,
+    Tooltip = "What gets bought first. Family strategies climb that upgrade family (cheapest first inside it) before spending on anything else; 'Most expensive first' buys the priciest upgrade you can afford.",
 })
 
 local upgradeStatusP = secUp:AddParagraph({ Title = "Status", Content = "off" })
@@ -623,7 +610,10 @@ local function playerOwnsUpgrade(name)
 end
 
 local function upgradeCandidates()
-    local preferred, rest = {}, {}
+    local strategy = EZ.Flags.UpgradePriorityMode
+    if type(strategy) ~= "string" then strategy = "Cheapest first" end
+    local familyFirst = STRATEGY_MATCH[strategy]
+    local family, rest = {}, {}
     for _, def in ipairs(RsUpgrades:GetChildren()) do
         if def:IsA("NumberValue") and not playerOwnsUpgrade(def.Name) then
             local parents = def:FindFirstChild("Parents")
@@ -634,18 +624,20 @@ local function upgradeCandidates()
                     name = def.Name,
                     cost = costChild and costChild:IsA("NumberValue") and costChild.Value or math.huge,
                 }
-                if upgradePreferred[def.Name] then
-                    preferred[#preferred + 1] = row
+                if familyFirst and familyFirst(def.Name) then
+                    family[#family + 1] = row
                 else
                     rest[#rest + 1] = row
                 end
             end
         end
     end
-    table.sort(preferred, function(a, b) return a.cost < b.cost end)
-    table.sort(rest, function(a, b) return a.cost < b.cost end)
+    local function byCostAsc(a, b) return a.cost < b.cost end
+    local function byCostDesc(a, b) return a.cost > b.cost end
+    table.sort(family, byCostAsc)
+    table.sort(rest, strategy == "Most expensive first" and byCostDesc or byCostAsc)
     local all = {}
-    for _, row in ipairs(preferred) do all[#all + 1] = row end
+    for _, row in ipairs(family) do all[#all + 1] = row end
     for _, row in ipairs(rest) do all[#all + 1] = row end
     return all
 end
