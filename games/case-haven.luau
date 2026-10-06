@@ -32,7 +32,11 @@ if game.GameId ~= 10141042381 then return end
     own active-case tracker matches the same rule). Another toggle rolls
     the most expensive crate the wallet covers at the current amount
     (price * amount <= wallet), so raising the amount automatically
-    steps down to a cheaper crate. Nothing else.
+    steps down to a cheaper crate. The Zones tab auto-buys the next
+    zone: it watches the player's Zones BoolValues for the lowest
+    unowned zone, reads its price from the streamed zone part
+    (workspace.Zones.<n>.Cost, cached once the part streams in) and
+    fires BuyZone the moment the wallet covers it. Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -79,6 +83,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Cases = ReplicatedStorage:WaitForChild("Cases")
 local MainEvent = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MainEvent")
 local lp = game:GetService("Players").LocalPlayer
+local PlayerZones = lp:WaitForChild("Zones")      -- BoolValue per zone: true = owned
+local ZoneParts = workspace:WaitForChild("Zones") -- streamed zone parts carrying Cost/Luck
 
 local RUNNING = true
 local enabled = {} -- [case name] = true for every case selected in the dropdown
@@ -296,6 +302,95 @@ task.spawn(function()
             end
         end
         task.wait(gap)
+    end
+end)
+
+----------------------------------------------------------------
+-- Zones tab: auto buy next zone
+----------------------------------------------------------------
+-- Ownership lives on the player as BoolValues ("1".."16", true = owned);
+-- the next zone is the lowest number not owned. Prices live on the
+-- streamed zone parts (workspace.Zones.<n>.Cost) — those only exist
+-- while you are near the zone, so each seen price is cached and the buy
+-- waits until a price is known. The game's own BuyZoneClient fires the
+-- same call: MainEvent:FireServer("BuyZone", <zone name>).
+local TabZones = Window:AddTab("Zones", "map-pin")
+
+local secZone = TabZones:AddSection("Auto Buy Zone")
+secZone:AddToggle("AutoZone", {
+    Text = "Auto buy next zone",
+    Default = false,
+    Tooltip = "Watches the lowest zone you do not own and buys it the moment the wallet covers its price. Zone prices are only visible while their part is streamed in, so the first tick may need you near the zone boundary.",
+})
+local zoneStatusP = secZone:AddParagraph({ Title = "Status", Content = "off" })
+
+local zoneCostCache = {} -- [zone number] = last seen Cost
+local lastZoneBuyAt = {} -- [zone number] = os.clock() of the last BuyZone fire
+
+local function nextUnownedZone()
+    local best
+    for _, v in ipairs(PlayerZones:GetChildren()) do
+        local n = tonumber(v.Name)
+        if n and not v.Value and (not best or n < best) then
+            best = n
+        end
+    end
+    return best
+end
+
+local function zoneCost(n)
+    local part = ZoneParts:FindFirstChild(tostring(n))
+    if part then
+        local cost = part:FindFirstChild("Cost")
+        if cost and cost:IsA("NumberValue") then
+            zoneCostCache[n] = cost.Value
+        end
+    end
+    return zoneCostCache[n]
+end
+
+task.spawn(function()
+    while RUNNING do
+        pcall(function()
+            if EZ.Flags.AutoZone ~= true then
+                zoneStatusP:Set("off")
+                return
+            end
+            local nextZone = nextUnownedZone()
+            if not nextZone then
+                zoneStatusP:Set("Every zone with a known price is owned.")
+                return
+            end
+            local cost = zoneCost(nextZone)
+            local walletChild = lp:FindFirstChild("Wallet")
+            local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value or 0
+            if not cost then
+                zoneStatusP:Set(string.format(
+                    "Next zone: %d - price unknown\nWalk near the zone boundary so its part streams in.\nWallet: $%s",
+                    nextZone, fmtPrice(wallet)))
+                return
+            end
+            if wallet >= cost then
+                if os.clock() - (lastZoneBuyAt[nextZone] or 0) > 2 then
+                    lastZoneBuyAt[nextZone] = os.clock()
+                    pcall(function()
+                        MainEvent:FireServer("BuyZone", tostring(nextZone))
+                    end)
+                    EZ:Notify({
+                        Title = "Case Haven Auto Spin",
+                        Content = "Bought zone " .. nextZone .. " for $" .. fmtPrice(cost),
+                        Duration = 6,
+                        Type = "success",
+                    })
+                    zoneStatusP:Set(string.format("Bought zone %d for $%s", nextZone, fmtPrice(cost)))
+                end
+            else
+                zoneStatusP:Set(string.format(
+                    "Next zone: %d - costs $%s\nWallet: $%s (need $%s more)",
+                    nextZone, fmtPrice(cost), fmtPrice(wallet), fmtPrice(cost - wallet)))
+            end
+        end)
+        task.wait(0.5)
     end
 end)
 
