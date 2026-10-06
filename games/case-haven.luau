@@ -50,9 +50,9 @@ if game.GameId ~= 10141042381 then return end
     the highest amount the player has unlocked (Settings > Case Open
     Slots) instead of the amount slider. A Bank tab auto-claims the
     accumulated bank money (CollectBank) and fills empty bank slots with
-    the highest-income items, scored with the game's own bank formula
-    (Weapons Base x float tier x StatTrak x BlueGem + sticker bases).
-    Nothing else.
+    the most valuable inventory items, ranked by the game's own item
+    worth (the inventory Price sort / Sell value; stickers are not part
+    of worth). Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -758,34 +758,58 @@ secBank:AddToggle("AutoBankClaim", {
 secBank:AddToggle("AutoBankEquip", {
     Text = "Auto equip best items to bank",
     Default = false,
-    Tooltip = "Fills empty bank slots with your highest-income items, scored exactly like the game's bank income formula (Weapons Base x float tier x StatTrak x BlueGem + sticker bases). Never touches slots you equipped yourself, and skips weapon names you already have banked.",
+    Tooltip = "Fills empty bank slots with your most valuable items, ranked by the game's own item worth - the same Base x float tier x StatTrak x BlueGem value the inventory's Price sort and Sell button use. Stickers only add bank income, not worth, so sticker items no longer outrank real skins. Never touches slots you equipped yourself, and skips weapon names you already have banked.",
 })
 local bankStatusP = secBank:AddParagraph({ Title = "Status", Content = "off" })
 
 local BankIncomeConfig
 pcall(function() BankIncomeConfig = require(ReplicatedStorage.Modules.CHBankIncomeConfig) end)
 
--- Score an inventory item exactly like the game's getBankSlotIncome
--- (without the bank-income multiplier, which is the same for every
--- item and therefore irrelevant for ranking).
-local function bankScore(item)
+-- The item's worth, exactly like the game's inventory "Price" sort and
+-- the Sell button (Mainscript): Weapons[name].Base x float tier x
+-- StatTrak(x2) x BlueGem. Stickers deliberately do NOT count - they add
+-- bank income but are not part of an item's worth, and this ranking is
+-- about worth.
+local function itemWorth(item)
     local weapon = Weapons:FindFirstChild(item.Name)
     if not weapon then
         return nil
     end
     local baseChild = weapon:FindFirstChild("Base")
     local base = baseChild and baseChild.Value or 0
-    local floatChild = item:FindFirstChild("Float")
-    local float = floatChild and floatChild:IsA("NumberValue") and floatChild.Value or item.Value
     local stattrak = item:FindFirstChild("StatTrak")
     local mult = stattrak and stattrak:IsA("BoolValue") and stattrak.Value == true and 2 or 1
     local blueGem = item:FindFirstChild("BlueGem")
     if blueGem and blueGem:IsA("NumberValue") and blueGem.Value > 0 then
         mult = mult * blueGem.Value
     end
+    local floatChild = item:FindFirstChild("Float")
+    local float = floatChild and floatChild:IsA("NumberValue") and floatChild.Value or item.Value
+    local floatMult = float < 0.07 and 1 or (float < 0.15 and 0.8 or (float < 0.38 and 0.4 or (float < 0.45 and 0.35 or 0.3)))
+    return math.ceil(base * floatMult * mult * 100) / 100
+end
+
+-- Actual bank income of a banked slot entry (BankFolder StringValue:
+-- Name = slot number, Value = weapon name) - same formula plus sticker
+-- bases, used only for the Status income display.
+local function bankEntryScore(entry)
+    local weapon = Weapons:FindFirstChild(entry.Value)
+    if not weapon then
+        return 0
+    end
+    local baseChild = weapon:FindFirstChild("Base")
+    local base = baseChild and baseChild.Value or 0
+    local stattrak = entry:FindFirstChild("StatTrak")
+    local mult = stattrak and stattrak:IsA("BoolValue") and stattrak.Value == true and 2 or 1
+    local blueGem = entry:FindFirstChild("BlueGem")
+    if blueGem and blueGem:IsA("NumberValue") and blueGem.Value > 0 then
+        mult = mult * blueGem.Value
+    end
+    local floatChild = entry:FindFirstChild("Float")
+    local float = floatChild and floatChild:IsA("NumberValue") and floatChild.Value or 1
     local floatMult = float < 0.07 and 1 or (float < 0.15 and 0.8 or (float < 0.38 and 0.4 or (float < 0.45 and 0.35 or 0.3)))
     local stickerSum = 0
-    local stickers = item:FindFirstChild("Stickers")
+    local stickers = entry:FindFirstChild("Stickers")
     if stickers then
         for _, sticker in ipairs(stickers:GetChildren()) do
             local stickerWeapon = Weapons:FindFirstChild(sticker.Name)
@@ -809,7 +833,7 @@ task.spawn(function()
             for _, entry in ipairs(lp.BankFolder:GetChildren()) do
                 if tonumber(entry.Name) then
                     used = used + 1
-                    income = income + (bankScore(entry) or 0)
+                    income = income + bankEntryScore(entry)
                 end
             end
             local multiplier = BankIncomeConfig and BankIncomeConfig.GetMultiplier(PlayerUpgrades) or 1
@@ -848,7 +872,7 @@ task.spawn(function()
                             end
                         end
                         if not banked then
-                            local score = bankScore(item)
+                            local score = itemWorth(item)
                             if score and score > 0 and (not bestScore or score > bestScore) then
                                 best, bestScore = item, score
                             end
