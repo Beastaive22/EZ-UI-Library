@@ -288,7 +288,7 @@ secSpin:AddSlider("SpinAmount", {
 secSpin:AddToggle("AutoMaxAmount", {
     Text = "Auto roll at highest amount",
     Default = false,
-    Tooltip = "Rolls with the maximum amount you have unlocked (the game's Case Open Slots setting - 6 right now) instead of the Amount slider. The server refuses anything above your unlocked slots, so this always sits exactly at the cap. Buying more Case Slot upgrades raises it automatically.",
+    Tooltip = "Rolls with the maximum amount you have unlocked (the game's Case Open Slots setting - 6 right now) instead of the Amount slider. Rolls still stay within what the wallet covers: the server silently drops unaffordable fires, so each roll uses the most copies you can actually pay for. Buying more Case Slot upgrades raises the cap automatically.",
 })
 
 secSpin:AddSlider("SpinDelay", {
@@ -304,6 +304,26 @@ secSpin:AddSlider("SpinDelay", {
 -- order), then the loop sleeps. Nothing is sent unless the main toggle
 -- is on; the amount is the slider value (the same field the game's own
 -- client sends as OpenCase.Amount).
+-- The game's own client refuses rolls it cannot afford ("Not Enough
+-- Money!"); the server silently drops unaffordable fires instead of
+-- erroring. Mirror that gate: every roll fires with the most copies the
+-- wallet covers, and is skipped when not even one is affordable. Prices
+-- are read live at fire time (this game drifts them).
+local function affordableAmount(name, wanted)
+    local case = Cases:FindFirstChild(name)
+    local priceChild = case and case:FindFirstChild("Price")
+    local price = priceChild and priceChild:IsA("NumberValue") and priceChild.Value or 0
+    local walletChild = lp:FindFirstChild("Wallet")
+    local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value or 0
+    if wallet < price then
+        return nil
+    end
+    if price > 0 then
+        return math.max(1, math.min(wanted, math.floor(wallet / price)))
+    end
+    return wanted
+end
+
 task.spawn(function()
     while RUNNING do
         local gap = math.clamp(tonumber(EZ.Flags.SpinDelay) or 1, 0.1, 60)
@@ -320,17 +340,23 @@ task.spawn(function()
             end
             for _, name in ipairs(names) do
                 if enabled[name] then
-                    pcall(function()
-                        MainEvent:FireServer("OpenCase", name, amount)
-                    end)
+                    local use = affordableAmount(name, amount)
+                    if use then
+                        pcall(function()
+                            MainEvent:FireServer("OpenCase", name, use)
+                        end)
+                    end
                 end
             end
             if EZ.Flags.LevelCase == true then
                 local best = highestUnlockedLevelCrate()
                 if best then
-                    pcall(function()
-                        MainEvent:FireServer("OpenCase", best.name, amount)
-                    end)
+                    local use = affordableAmount(best.name, amount)
+                    if use then
+                        pcall(function()
+                            MainEvent:FireServer("OpenCase", best.name, use)
+                        end)
+                    end
                 end
             end
             if EZ.Flags.ExpensiveCase == true then
