@@ -124,6 +124,11 @@ local GAMES = {
 		universes = { 10764891927 },              -- 1.8 Club
 		places = { 102518817130593 },
 	},
+	{
+		slug = "case-haven", name = "Case Haven", note = "auto spin cases",
+		universes = { 10141042381 },              -- Case Haven
+		places = { 86942234200714 },              -- main
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
