@@ -48,7 +48,11 @@ if game.GameId ~= 10141042381 then return end
     (cheapest / most expensive first, or a family like Faster rolls or
     Luck climbs first, the rest cheapest first). A toggle makes every roll use
     the highest amount the player has unlocked (Settings > Case Open
-    Slots) instead of the amount slider. Nothing else.
+    Slots) instead of the amount slider. A Bank tab auto-claims the
+    accumulated bank money (CollectBank) and fills empty bank slots with
+    the highest-income items, scored with the game's own bank formula
+    (Weapons Base x float tier x StatTrak x BlueGem + sticker bases).
+    Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -111,6 +115,7 @@ pcall(function() MasteryConfig = require(ReplicatedStorage.Modules.CHCaseMastery
 local MainFunction = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MainFunction")
 local RsUpgrades = ReplicatedStorage:WaitForChild("Upgrades")
 local PlayerUpgrades = lp:WaitForChild("Upgrades")
+local Weapons = ReplicatedStorage:WaitForChild("Weapons")
 
 local RUNNING = true
 local enabled = {} -- [case name] = true for every case selected in the dropdown
@@ -726,6 +731,143 @@ task.spawn(function()
             else
                 lastUpgradeTryAt[pick.name] = os.clock()
                 upgradeStatusP:Set(string.format("Server refused %s - retrying in a few seconds", pick.name))
+            end
+        end)
+        task.wait(1)
+    end
+end)
+
+----------------------------------------------------------------
+-- Bank tab: auto claim + auto equip best
+----------------------------------------------------------------
+-- Both features fire the same calls the BankUI buttons make:
+--   claim: MainEvent:FireServer("CollectBank")
+--   equip: MainEvent:FireServer("Banking", <inventory item>, <slot>)
+--          (with false instead of the item it clears the slot)
+-- "Best" mirrors the game's own getBankSlotIncome scoring:
+--   Weapons[name].Base x float tier x StatTrak(x2) x BlueGem + sticker
+--   bases, higher is better. Only weapons earn bank income.
+local TabBank = Window:AddTab("Bank", "landmark")
+
+local secBank = TabBank:AddSection("Bank")
+secBank:AddToggle("AutoBankClaim", {
+    Text = "Auto claim bank money",
+    Default = false,
+    Tooltip = "Collects the accumulated bank money as soon as there is any (the same CollectBank call the BankUI Collect button makes), keeping the wallet topped up for rolls and upgrades.",
+})
+secBank:AddToggle("AutoBankEquip", {
+    Text = "Auto equip best items to bank",
+    Default = false,
+    Tooltip = "Fills empty bank slots with your highest-income items, scored exactly like the game's bank income formula (Weapons Base x float tier x StatTrak x BlueGem + sticker bases). Never touches slots you equipped yourself, and skips weapon names you already have banked.",
+})
+local bankStatusP = secBank:AddParagraph({ Title = "Status", Content = "off" })
+
+local BankIncomeConfig
+pcall(function() BankIncomeConfig = require(ReplicatedStorage.Modules.CHBankIncomeConfig) end)
+
+-- Score an inventory item exactly like the game's getBankSlotIncome
+-- (without the bank-income multiplier, which is the same for every
+-- item and therefore irrelevant for ranking).
+local function bankScore(item)
+    local weapon = Weapons:FindFirstChild(item.Name)
+    if not weapon then
+        return nil
+    end
+    local baseChild = weapon:FindFirstChild("Base")
+    local base = baseChild and baseChild.Value or 0
+    local floatChild = item:FindFirstChild("Float")
+    local float = floatChild and floatChild:IsA("NumberValue") and floatChild.Value or item.Value
+    local stattrak = item:FindFirstChild("StatTrak")
+    local mult = stattrak and stattrak:IsA("BoolValue") and stattrak.Value == true and 2 or 1
+    local blueGem = item:FindFirstChild("BlueGem")
+    if blueGem and blueGem:IsA("NumberValue") and blueGem.Value > 0 then
+        mult = mult * blueGem.Value
+    end
+    local floatMult = float < 0.07 and 1 or (float < 0.15 and 0.8 or (float < 0.38 and 0.4 or (float < 0.45 and 0.35 or 0.3)))
+    local stickerSum = 0
+    local stickers = item:FindFirstChild("Stickers")
+    if stickers then
+        for _, sticker in ipairs(stickers:GetChildren()) do
+            local stickerWeapon = Weapons:FindFirstChild(sticker.Name)
+            local stickerBase = stickerWeapon and stickerWeapon:FindFirstChild("Base")
+            if stickerBase then
+                stickerSum = stickerSum + stickerBase.Value
+            end
+        end
+    end
+    return math.ceil((base * floatMult * mult + stickerSum) / 100) / 100
+end
+
+task.spawn(function()
+    while RUNNING do
+        pcall(function()
+            local collect = lp:FindFirstChild("BankCollect")
+            local pending = collect and collect:IsA("NumberValue") and collect.Value or 0
+            local slotCount = lp.BankSlots and lp.BankSlots.Value or 0
+            local used = 0
+            local income = 0
+            for _, entry in ipairs(lp.BankFolder:GetChildren()) do
+                if tonumber(entry.Name) then
+                    used = used + 1
+                    income = income + (bankScore(entry) or 0)
+                end
+            end
+            local multiplier = BankIncomeConfig and BankIncomeConfig.GetMultiplier(PlayerUpgrades) or 1
+
+            if EZ.Flags.AutoBankClaim == true and pending > 0 and claimReady("bankclaim", 5) then
+                pcall(function()
+                    MainEvent:FireServer("CollectBank")
+                end)
+            end
+
+            if EZ.Flags.AutoBankEquip == true then
+                local occupied = {}
+                local lowestEmpty
+                for _, entry in ipairs(lp.BankFolder:GetChildren()) do
+                    local slotNumber = tonumber(entry.Name)
+                    if slotNumber then
+                        occupied[slotNumber] = entry.Value
+                    end
+                end
+                for slot = 1, slotCount do
+                    if not occupied[slot] then
+                        lowestEmpty = slot
+                        break
+                    end
+                end
+                if lowestEmpty then
+                    local best, bestScore
+                    for _, item in ipairs(lp.Inventory:GetChildren()) do
+                        -- skip weapons already banked (by name) so a
+                        -- refused duplicate can never loop
+                        local banked = false
+                        for _, name in pairs(occupied) do
+                            if name == item.Name then
+                                banked = true
+                                break
+                            end
+                        end
+                        if not banked then
+                            local score = bankScore(item)
+                            if score and score > 0 and (not bestScore or score > bestScore) then
+                                best, bestScore = item, score
+                            end
+                        end
+                    end
+                    if best and claimReady("bankequip:" .. lowestEmpty, 5) then
+                        pcall(function()
+                            MainEvent:FireServer("Banking", best, lowestEmpty)
+                        end)
+                    end
+                end
+            end
+
+            if EZ.Flags.AutoBankClaim ~= true and EZ.Flags.AutoBankEquip ~= true then
+                bankStatusP:Set("off")
+            else
+                bankStatusP:Set(string.format(
+                    "Slots: %d/%d used - pending: $%s\nIncome: $%s/s",
+                    used, slotCount, fmtPrice(pending), fmtPrice(income * multiplier)))
             end
         end)
         task.wait(1)
