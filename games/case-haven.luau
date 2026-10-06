@@ -36,7 +36,12 @@ if game.GameId ~= 10141042381 then return end
     zone: it watches the player's Zones BoolValues for the lowest
     unowned zone, reads its price from the streamed zone part
     (workspace.Zones.<n>.Cost, cached once the part streams in) and
-    fires BuyZone the moment the wallet covers it. Nothing else.
+    fires BuyZone the moment the wallet covers it. The same tab can
+    auto-teleport to the highest owned zone (on enable and whenever a
+    better zone unlocks). A Claims tab auto-claims daily quests (ready
+    ones via CHDailyQuestRequest), case masteries (via the game's own
+    CHCaseMasteryConfig.CanClaim check) and time rewards (TodaysItems
+    past their 6-minute mark). Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -85,6 +90,16 @@ local MainEvent = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MainEv
 local lp = game:GetService("Players").LocalPlayer
 local PlayerZones = lp:WaitForChild("Zones")      -- BoolValue per zone: true = owned
 local ZoneParts = workspace:WaitForChild("Zones") -- streamed zone parts carrying Cost/Luck
+local CHDailyQuestRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CHDailyQuestRequest")
+local CHCaseMasteryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CHCaseMasteryRemote")
+local QuestFolder = lp:WaitForChild("DailyQuests"):WaitForChild("Quests")
+local ClaimedMasteries = lp:WaitForChild("ClaimedCaseMasteries")
+
+-- The game's own eligibility logic for case mastery claims (which cases
+-- count, which are excluded); used verbatim so the script never claims
+-- something the game's UI would refuse.
+local MasteryConfig
+pcall(function() MasteryConfig = require(ReplicatedStorage.Modules.CHCaseMasteryConfig) end)
 
 local RUNNING = true
 local enabled = {} -- [case name] = true for every case selected in the dropdown
@@ -324,8 +339,16 @@ secZone:AddToggle("AutoZone", {
 })
 local zoneStatusP = secZone:AddParagraph({ Title = "Status", Content = "off" })
 
+secZone:AddToggle("AutoTeleport", {
+    Text = "Auto teleport to best unlocked zone",
+    Default = false,
+    Tooltip = "Teleports to the highest zone you own the moment this turns on, and again every time a better zone unlocks (pairs with auto buy next zone). Fires the same Teleport call the TeleportFrame buttons make.",
+})
+local teleportStatusP = secZone:AddParagraph({ Title = "Teleport Status", Content = "off" })
+
 local zoneCostCache = {} -- [zone number] = last seen Cost
 local lastZoneBuyAt = {} -- [zone number] = os.clock() of the last BuyZone fire
+local lastTeleportedZone -- best zone already teleported to
 
 local function nextUnownedZone()
     local best
@@ -352,45 +375,164 @@ end
 task.spawn(function()
     while RUNNING do
         pcall(function()
+            -- auto buy next zone
             if EZ.Flags.AutoZone ~= true then
                 zoneStatusP:Set("off")
-                return
-            end
-            local nextZone = nextUnownedZone()
-            if not nextZone then
-                zoneStatusP:Set("Every zone with a known price is owned.")
-                return
-            end
-            local cost = zoneCost(nextZone)
-            local walletChild = lp:FindFirstChild("Wallet")
-            local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value or 0
-            if not cost then
-                zoneStatusP:Set(string.format(
-                    "Next zone: %d - price unknown\nWalk near the zone boundary so its part streams in.\nWallet: $%s",
-                    nextZone, fmtPrice(wallet)))
-                return
-            end
-            if wallet >= cost then
-                if os.clock() - (lastZoneBuyAt[nextZone] or 0) > 2 then
-                    lastZoneBuyAt[nextZone] = os.clock()
-                    pcall(function()
-                        MainEvent:FireServer("BuyZone", tostring(nextZone))
-                    end)
-                    EZ:Notify({
-                        Title = "Case Haven Auto Spin",
-                        Content = "Bought zone " .. nextZone .. " for $" .. fmtPrice(cost),
-                        Duration = 6,
-                        Type = "success",
-                    })
-                    zoneStatusP:Set(string.format("Bought zone %d for $%s", nextZone, fmtPrice(cost)))
-                end
             else
-                zoneStatusP:Set(string.format(
-                    "Next zone: %d - costs $%s\nWallet: $%s (need $%s more)",
-                    nextZone, fmtPrice(cost), fmtPrice(wallet), fmtPrice(cost - wallet)))
+                local nextZone = nextUnownedZone()
+                if not nextZone then
+                    zoneStatusP:Set("Every zone with a known price is owned.")
+                else
+                    local cost = zoneCost(nextZone)
+                    local walletChild = lp:FindFirstChild("Wallet")
+                    local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value or 0
+                    if not cost then
+                        zoneStatusP:Set(string.format(
+                            "Next zone: %d - price unknown\nWalk near the zone boundary so its part streams in.\nWallet: $%s",
+                            nextZone, fmtPrice(wallet)))
+                    elseif wallet >= cost then
+                        if os.clock() - (lastZoneBuyAt[nextZone] or 0) > 2 then
+                            lastZoneBuyAt[nextZone] = os.clock()
+                            pcall(function()
+                                MainEvent:FireServer("BuyZone", tostring(nextZone))
+                            end)
+                            EZ:Notify({
+                                Title = "Case Haven Auto Spin",
+                                Content = "Bought zone " .. nextZone .. " for $" .. fmtPrice(cost),
+                                Duration = 6,
+                                Type = "success",
+                            })
+                            zoneStatusP:Set(string.format("Bought zone %d for $%s", nextZone, fmtPrice(cost)))
+                        end
+                    else
+                        zoneStatusP:Set(string.format(
+                            "Next zone: %d - costs $%s\nWallet: $%s (need $%s more)",
+                            nextZone, fmtPrice(cost), fmtPrice(wallet), fmtPrice(cost - wallet)))
+                    end
+                end
+            end
+
+            -- auto teleport to best owned zone
+            if EZ.Flags.AutoTeleport ~= true then
+                lastTeleportedZone = nil
+                teleportStatusP:Set("off")
+            else
+                local best
+                for _, v in ipairs(PlayerZones:GetChildren()) do
+                    local n = tonumber(v.Name)
+                    if n and v.Value and (not best or n > best) then
+                        best = n
+                    end
+                end
+                if not best then
+                    teleportStatusP:Set("No zones owned yet.")
+                elseif best ~= lastTeleportedZone then
+                    lastTeleportedZone = best
+                    pcall(function()
+                        MainEvent:FireServer("Teleport", tostring(best))
+                    end)
+                    teleportStatusP:Set("Teleported to zone " .. best)
+                end
             end
         end)
         task.wait(0.5)
+    end
+end)
+
+----------------------------------------------------------------
+-- Claims tab: quests / case mastery / time rewards
+----------------------------------------------------------------
+-- All three claims reuse the game's own client entry points and gates:
+--   quests:       CHDailyQuestRequest:InvokeServer("Claim", id) when
+--                 Progress >= Goal and not Claimed (mirrors the quest UI)
+--   mastery:      CHCaseMasteryRemote:FireServer("Claim", case) when the
+--                 game's own CHCaseMasteryConfig.CanClaim says so and the
+--                 case is not claimed yet
+--   time rewards: MainEvent:FireServer("ClaimReward", <order>) for
+--                 TodaysItems past their Order*6min mark with inventory
+--                 space (mirrors the game's own claim button handler)
+local TabClaims = Window:AddTab("Claims", "gift")
+
+local secClaims = TabClaims:AddSection("Auto Claim")
+secClaims:AddToggle("AutoQuests", {
+    Text = "Auto claim quests",
+    Default = false,
+    Tooltip = "Claims every daily quest whose Progress has reached its Goal. Quests are read from DailyQuests.Quests, so nothing is claimed early or twice.",
+})
+secClaims:AddToggle("AutoMastery", {
+    Text = "Auto claim case mastery",
+    Default = false,
+    Tooltip = "Claims case mastery for every case where all items are discovered, using the game's own CHCaseMasteryConfig.CanClaim check. VIP/Puzzle and excluded cases are skipped the same way the game skips them.",
+})
+secClaims:AddToggle("AutoTimeRewards", {
+    Text = "Auto claim time rewards",
+    Default = false,
+    Tooltip = "Claims TodaysItems rewards once you have been in the game past their mark (order x 6 minutes). Skips when the inventory is full, like the game's own claim button does.",
+})
+
+local lastClaimAt = {} -- [key] = os.clock() of the last claim fire
+
+local function claimReady(key, cooldown)
+    local now = os.clock()
+    if now - (lastClaimAt[key] or 0) < cooldown then
+        return false
+    end
+    lastClaimAt[key] = now
+    return true
+end
+
+task.spawn(function()
+    while RUNNING do
+        pcall(function()
+            if EZ.Flags.AutoQuests == true then
+                for _, quest in ipairs(QuestFolder:GetChildren()) do
+                    local progress = quest:FindFirstChild("Progress")
+                    local goal = quest:FindFirstChild("Goal")
+                    local claimed = quest:FindFirstChild("Claimed")
+                    if claimed and claimed:IsA("BoolValue") and claimed.Value == false
+                        and progress and goal
+                        and progress:IsA("NumberValue") and goal:IsA("NumberValue")
+                        and progress.Value >= goal.Value
+                        and claimReady("quest:" .. quest.Name, 3) then
+                        pcall(function()
+                            CHDailyQuestRequest:InvokeServer("Claim", quest.Name)
+                        end)
+                        task.wait(0.3)
+                    end
+                end
+            end
+
+            if EZ.Flags.AutoMastery == true and MasteryConfig then
+                for _, case in ipairs(MasteryConfig.GetCases()) do
+                    local claimed = ClaimedMasteries:FindFirstChild(case.Name)
+                    if (not claimed or claimed.Value ~= true)
+                        and MasteryConfig.CanClaim(lp, case.Name)
+                        and claimReady("mastery:" .. case.Name, 3) then
+                        pcall(function()
+                            CHCaseMasteryRemote:FireServer("Claim", case.Name)
+                        end)
+                        task.wait(0.3)
+                    end
+                end
+            end
+
+            if EZ.Flags.AutoTimeRewards == true then
+                local inventorySize = lp.InventorySize and lp.InventorySize.Value or 0
+                for _, item in ipairs(lp.TodaysItems:GetChildren()) do
+                    local order = item:FindFirstChild("Order")
+                    if item.Value == false and order and order:IsA("NumberValue")
+                        and lp.TimeToday.Value > order.Value * 6 * 60
+                        and #lp.Inventory:GetChildren() + 1 <= inventorySize
+                        and claimReady("reward:" .. tostring(order.Value), 3) then
+                        pcall(function()
+                            MainEvent:FireServer("ClaimReward", tostring(order.Value))
+                        end)
+                        task.wait(0.3)
+                    end
+                end
+            end
+        end)
+        task.wait(1)
     end
 end)
 
