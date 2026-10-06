@@ -27,7 +27,9 @@ if game.GameId ~= 10141042381 then return end
     — the amount slider sets the number at the end of the OpenCase
     payload, and the game's own client sends the same field (its
     OpenCase.Amount). A main toggle arms rolling: nothing is sent while
-    it is off. Nothing else.
+    it is off. A separate toggle also rolls the highest Level N Case your
+    level has unlocked (the level crates unlock at level N; the game's
+    own active-case tracker matches the same rule). Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -73,6 +75,7 @@ for name, tbl in EZ.Themes do ThemeManager:AddTheme(name, tbl) end
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Cases = ReplicatedStorage:WaitForChild("Cases")
 local MainEvent = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MainEvent")
+local lp = game:GetService("Players").LocalPlayer
 
 local RUNNING = true
 local enabled = {} -- [case name] = true for every case selected in the dropdown
@@ -99,6 +102,32 @@ local function fmtPrice(n)
         return string.format("%.2fK", n / 1000)
     end
     return string.format("%.2f", n)
+end
+
+----------------------------------------------------------------
+-- Level crates (unlock as you level)
+----------------------------------------------------------------
+-- "Level N Case" crates unlock at level N: the game's own active-case
+-- tracker matches the highest N <= your level (level 65 -> "Level 60
+-- Case"). Collected live so new level crates show up on their own.
+local levelCrates = {}
+for _, case in ipairs(Cases:GetChildren()) do
+    local lvl = case.Name:match("^Level (%d+) Case$")
+    if lvl then
+        levelCrates[#levelCrates + 1] = { level = tonumber(lvl), name = case.Name }
+    end
+end
+table.sort(levelCrates, function(a, b) return a.level < b.level end)
+
+local function highestUnlockedLevelCrate()
+    local levelChild = lp:FindFirstChild("Level")
+    local level = levelChild and levelChild:IsA("NumberValue") and levelChild.Value
+    if type(level) ~= "number" then return nil end
+    local best
+    for _, row in ipairs(levelCrates) do
+        if row.level <= level then best = row end
+    end
+    return best
 end
 
 ----------------------------------------------------------------
@@ -180,6 +209,12 @@ secSpin:AddDropdown("SpinCases", {
     Callback = setSelected,
 })
 
+secSpin:AddToggle("LevelCase", {
+    Text = "Also roll highest unlocked level crate",
+    Default = false,
+    Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked (Level 60 Case at level 65, next at 70). Shares the amount and delay sliders; if that crate is also picked in the dropdown it rolls twice.",
+})
+
 secSpin:AddSlider("SpinAmount", {
     Text = "Amount per roll",
     Min = 1, Max = 10, Default = 1, Increment = 1,
@@ -208,6 +243,14 @@ task.spawn(function()
                 if enabled[name] then
                     pcall(function()
                         MainEvent:FireServer("OpenCase", name, amount)
+                    end)
+                end
+            end
+            if EZ.Flags.LevelCase == true then
+                local best = highestUnlockedLevelCrate()
+                if best then
+                    pcall(function()
+                        MainEvent:FireServer("OpenCase", best.name, amount)
                     end)
                 end
             end
