@@ -41,7 +41,12 @@ if game.GameId ~= 10141042381 then return end
     better zone unlocks). A Claims tab auto-claims daily quests (ready
     ones via CHDailyQuestRequest), case masteries (via the game's own
     CHCaseMasteryConfig.CanClaim check) and time rewards (TodaysItems
-    past their 6-minute mark). Nothing else.
+    past their 6-minute mark). An Upgrades tab auto-buys available
+    upgrade-tree nodes straight through MainFunction:InvokeServer (the
+    exact call the tree's buy buttons make) - no menu opening, camera
+    movement or game UI effects; priority upgrades selected in a
+    searchable dropdown are bought first, the rest cheapest first.
+    Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -100,6 +105,10 @@ local ClaimedMasteries = lp:WaitForChild("ClaimedCaseMasteries")
 -- something the game's UI would refuse.
 local MasteryConfig
 pcall(function() MasteryConfig = require(ReplicatedStorage.Modules.CHCaseMasteryConfig) end)
+
+local MainFunction = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MainFunction")
+local RsUpgrades = ReplicatedStorage:WaitForChild("Upgrades")
+local PlayerUpgrades = lp:WaitForChild("Upgrades")
 
 local RUNNING = true
 local enabled = {} -- [case name] = true for every case selected in the dropdown
@@ -530,6 +539,158 @@ task.spawn(function()
                         task.wait(0.3)
                     end
                 end
+            end
+        end)
+        task.wait(1)
+    end
+end)
+
+----------------------------------------------------------------
+-- Upgrades tab: auto buy upgrade-tree nodes
+----------------------------------------------------------------
+-- Pure remote path: MainFunction:InvokeServer("Upgrade", name) is the
+-- exact call the upgrade tree's buy buttons make (MainGui.Mainscript).
+-- Nothing here opens the tree GUI, moves the camera or touches game UI.
+-- Availability mirrors the game's own UpgradeModule.isKnown: a node is
+-- buyable once its first Parent is owned (root nodes are always known).
+local TabUpgrades = Window:AddTab("Upgrades", "trending-up")
+
+local secUp = TabUpgrades:AddSection("Auto Upgrade")
+secUp:AddToggle("AutoUpgrades", {
+    Text = "Auto buy upgrades",
+    Default = false,
+    Tooltip = "Buys one available upgrade per tick from the upgrade tree, fired straight through the game's own remote. No menu opening, camera movement or UI effects. Priority upgrades below are bought first; everything else cheapest first.",
+})
+
+local upgradeRows = {}
+for _, def in ipairs(RsUpgrades:GetChildren()) do
+    if def:IsA("NumberValue") then
+        local costChild = def:FindFirstChild("Cost")
+        upgradeRows[#upgradeRows + 1] = {
+            name = def.Name,
+            cost = costChild and costChild:IsA("NumberValue") and costChild.Value or math.huge,
+        }
+    end
+end
+table.sort(upgradeRows, function(a, b)
+    if a.cost ~= b.cost then return a.cost < b.cost end
+    return a.name < b.name
+end)
+
+local upgradeDisplays = {}
+local upgradeDisplayToName = {}
+for i, row in ipairs(upgradeRows) do
+    upgradeDisplays[i] = row.name .. " ($" .. fmtPrice(row.cost) .. ")"
+    upgradeDisplayToName[upgradeDisplays[i]] = row.name
+end
+
+local upgradePreferred = {}
+local function setUpgradePreferred(v)
+    table.clear(upgradePreferred)
+    if type(v) ~= "table" then return end
+    if type(v[1]) == "string" then
+        for _, display in ipairs(v) do
+            if upgradeDisplayToName[display] then
+                upgradePreferred[upgradeDisplayToName[display]] = true
+            end
+        end
+    else
+        for display, on in pairs(v) do
+            if on == true and upgradeDisplayToName[display] then
+                upgradePreferred[upgradeDisplayToName[display]] = true
+            end
+        end
+    end
+end
+
+secUp:AddDropdown("UpgradePriority", {
+    Text = "Priority upgrades (bought first)",
+    Values = upgradeDisplays,
+    Multi = true,
+    Searchable = true,
+    VisibleItems = 10,
+    Tooltip = "Selected upgrades are bought before everything else (cheapest first among them). Leave empty to buy everything cheapest first.",
+    Callback = setUpgradePreferred,
+})
+
+local upgradeStatusP = secUp:AddParagraph({ Title = "Status", Content = "off" })
+
+local lastUpgradeTryAt = {} -- [name] = os.clock() of the last refused try
+
+local function playerOwnsUpgrade(name)
+    local v = PlayerUpgrades:FindFirstChild(name)
+    return v ~= nil and v.Value > 0
+end
+
+local function upgradeCandidates()
+    local preferred, rest = {}, {}
+    for _, def in ipairs(RsUpgrades:GetChildren()) do
+        if def:IsA("NumberValue") and not playerOwnsUpgrade(def.Name) then
+            local parents = def:FindFirstChild("Parents")
+            local first = parents and parents:GetChildren()[1]
+            if not first or playerOwnsUpgrade(first.Name) then
+                local costChild = def:FindFirstChild("Cost")
+                local row = {
+                    name = def.Name,
+                    cost = costChild and costChild:IsA("NumberValue") and costChild.Value or math.huge,
+                }
+                if upgradePreferred[def.Name] then
+                    preferred[#preferred + 1] = row
+                else
+                    rest[#rest + 1] = row
+                end
+            end
+        end
+    end
+    table.sort(preferred, function(a, b) return a.cost < b.cost end)
+    table.sort(rest, function(a, b) return a.cost < b.cost end)
+    local all = {}
+    for _, row in ipairs(preferred) do all[#all + 1] = row end
+    for _, row in ipairs(rest) do all[#all + 1] = row end
+    return all
+end
+
+task.spawn(function()
+    while RUNNING do
+        pcall(function()
+            if EZ.Flags.AutoUpgrades ~= true then
+                upgradeStatusP:Set("off")
+                return
+            end
+            local walletChild = lp:FindFirstChild("Wallet")
+            local wallet = walletChild and walletChild:IsA("NumberValue") and walletChild.Value or 0
+            local candidates = upgradeCandidates()
+            local pick
+            for _, row in ipairs(candidates) do
+                if row.cost <= wallet and os.clock() - (lastUpgradeTryAt[row.name] or 0) > 3 then
+                    pick = row
+                    break
+                end
+            end
+            if not pick then
+                if candidates[1] then
+                    upgradeStatusP:Set(string.format(
+                        "Waiting for money - cheapest available: %s ($%s)\nWallet: $%s",
+                        candidates[1].name, fmtPrice(candidates[1].cost), fmtPrice(wallet)))
+                else
+                    upgradeStatusP:Set("No available upgrades (all owned or locked behind unowned prerequisites).")
+                end
+                return
+            end
+            local ok, res = pcall(function()
+                return MainFunction:InvokeServer("Upgrade", pick.name)
+            end)
+            if ok and res ~= nil then
+                EZ:Notify({
+                    Title = "Case Haven Auto Spin",
+                    Content = "Bought upgrade: " .. pick.name .. " ($" .. fmtPrice(pick.cost) .. ")",
+                    Duration = 5,
+                    Type = "success",
+                })
+                upgradeStatusP:Set(string.format("Bought %s for $%s", pick.name, fmtPrice(pick.cost)))
+            else
+                lastUpgradeTryAt[pick.name] = os.clock()
+                upgradeStatusP:Set(string.format("Server refused %s - retrying in a few seconds", pick.name))
             end
         end)
         task.wait(1)
