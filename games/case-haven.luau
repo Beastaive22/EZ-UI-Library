@@ -29,10 +29,12 @@ if game.GameId ~= 10141042381 then return end
     OpenCase.Amount). A main toggle arms rolling: nothing is sent while
     it is off. A separate toggle also rolls the highest Level N Case your
     level has unlocked (the level crates unlock at level N; the game's
-    own active-case tracker matches the same rule). Another toggle rolls
-    the most expensive crate the wallet covers at the current amount
-    (price * amount <= wallet), so raising the amount automatically
-    steps down to a cheaper crate. The Zones tab auto-buys the next
+    own active-case tracker matches the same rule); when the top one is
+    unaffordable it falls back down the level-crate chain to the Free
+    Case so the toggle can never soft-lock an idle farm. Another toggle
+    rolls the most expensive crate the wallet covers at the current
+    amount (price * amount <= wallet), so raising the amount
+    automatically steps down to a cheaper crate. The Zones tab auto-buys the next
     zone: it watches the player's Zones BoolValues for the lowest
     unowned zone, reads its price from the streamed zone part
     (workspace.Zones.<n>.Cost, cached once the part streams in) and
@@ -275,7 +277,7 @@ secSpin:AddDropdown("SpinCases", {
 secSpin:AddToggle("LevelCase", {
     Text = "Also roll highest unlocked level crate",
     Default = false,
-    Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked (Level 60 Case at level 65, next at 70). Shares the amount and delay sliders; if that crate is also picked in the dropdown it rolls twice.",
+    Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked. If that crate is unaffordable it falls back down the level-crate chain - ultimately to the Free Case - so it always rolls something and can never soft-lock an idle farm. Shares the amount and delay sliders; if a fallen-back crate is also picked in the dropdown it rolls twice.",
 })
 
 secSpin:AddToggle("ExpensiveCase", {
@@ -356,12 +358,29 @@ task.spawn(function()
             if EZ.Flags.LevelCase == true then
                 local best = highestUnlockedLevelCrate()
                 if best then
-                    local use = affordableAmount(best.name, amount)
-                    if use then
-                        pcall(function()
-                            MainEvent:FireServer("OpenCase", best.name, use)
-                        end)
+                    -- Walk down the level-crate chain from the highest
+                    -- unlocked one and roll the highest affordable crate;
+                    -- the chain ends at the Free Case (price 0, always
+                    -- affordable), so the toggle keeps making progress no
+                    -- matter how low the wallet gets - never a soft lock.
+                    local pickName, pickAmount
+                    for i = #levelCrates, 1, -1 do
+                        local row = levelCrates[i]
+                        if row.level <= best.level then
+                            local use = affordableAmount(row.name, amount)
+                            if use then
+                                pickName, pickAmount = row.name, use
+                                break
+                            end
+                        end
                     end
+                    if not pickName then
+                        pickName = "Free Case"
+                        pickAmount = affordableAmount("Free Case", amount) or amount
+                    end
+                    pcall(function()
+                        MainEvent:FireServer("OpenCase", pickName, pickAmount)
+                    end)
                 end
             end
             if EZ.Flags.ExpensiveCase == true then
