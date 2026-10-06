@@ -46,7 +46,9 @@ if game.GameId ~= 10141042381 then return end
     exact call the tree's buy buttons make) - no menu opening, camera
     movement or game UI effects; a Buy priority dropdown picks the order
     (cheapest / most expensive first, or a family like Faster rolls or
-    Luck climbs first, the rest cheapest first). Nothing else.
+    Luck climbs first, the rest cheapest first). A toggle makes every roll use
+    the highest amount the player has unlocked (Settings > Case Open
+    Slots) instead of the amount slider. Nothing else.
 
     A case's cost is the Price NumberValue on its StringValue; prices are
     formatted with the game's own MoneyFormatter module (K/M/B/T compact
@@ -283,6 +285,12 @@ secSpin:AddSlider("SpinAmount", {
     Tooltip = "How many copies each fire rolls - the number at the end of the OpenCase payload. Click the value label to type an exact number. The game only accepts up to your unlocked Case Slots (2 by default, raised by the Case Slot upgrades); higher values are refused, so those fires just do nothing.",
 })
 
+secSpin:AddToggle("AutoMaxAmount", {
+    Text = "Auto roll at highest amount",
+    Default = false,
+    Tooltip = "Rolls with the maximum amount you have unlocked (the game's Case Open Slots setting - 6 right now) instead of the Amount slider. The server refuses anything above your unlocked slots, so this always sits exactly at the cap. Buying more Case Slot upgrades raises it automatically.",
+})
+
 secSpin:AddSlider("SpinDelay", {
     Text = "Delay between rolls",
     Min = 0.1, Max = 5, Default = 1, Increment = 0.1, Suffix = "s",
@@ -300,7 +308,16 @@ task.spawn(function()
     while RUNNING do
         local gap = math.clamp(tonumber(EZ.Flags.SpinDelay) or 1, 0.1, 60)
         if EZ.Flags.MainRoll == true then
-            local amount = math.floor(math.clamp(tonumber(EZ.Flags.SpinAmount) or 1, 1, 10))
+            local amount
+            if EZ.Flags.AutoMaxAmount == true then
+                -- the game's own cap: Player.Settings["Case Open Slots"]
+                -- (the OpenCase Plus button clamps against the same value)
+                local settings = lp:FindFirstChild("Settings")
+                local slots = settings and settings:FindFirstChild("Case Open Slots")
+                amount = slots and slots:IsA("NumberValue") and math.max(1, math.floor(slots.Value)) or 1
+            else
+                amount = math.floor(math.clamp(tonumber(EZ.Flags.SpinAmount) or 1, 1, 10))
+            end
             for _, name in ipairs(names) do
                 if enabled[name] then
                     pcall(function()
