@@ -277,7 +277,7 @@ secSpin:AddDropdown("SpinCases", {
 secSpin:AddToggle("LevelCase", {
     Text = "Also roll highest unlocked level crate",
     Default = false,
-    Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked. If that crate is unaffordable it falls back down the level-crate chain - ultimately to the Free Case - so it always rolls something and can never soft-lock an idle farm. Shares the amount and delay sliders; if a fallen-back crate is also picked in the dropdown it rolls twice.",
+    Tooltip = "Each tick also rolls the highest Level N Case your level has unlocked that actually makes money over time (crates whose expected item value is below their price are skipped - Levels 80+ are money furnaces). If a crate is unaffordable it falls back down the chain - ultimately to the Free Case - so it always rolls something and can never soft-lock an idle farm. Shares the amount and delay sliders; if a fallen-back crate is also picked in the dropdown it rolls twice.",
 })
 
 secSpin:AddToggle("ExpensiveCase", {
@@ -307,6 +307,44 @@ secSpin:AddSlider("SpinDelay", {
 ----------------------------------------------------------------
 -- Auto spin loop
 ----------------------------------------------------------------
+-- Profitability gate (user-requested): skip crates that lose money over
+-- time. Expected value per roll comes from the game's own odds
+-- (CaseRoller.GetItemBaseProbability needs the item INSTANCE) times the
+-- empirically measured average float multiplier of rolled items
+-- (~0.47 across 80 live rolls). Odds are static, so the expensive part
+-- is cached per case; the live price is checked on every gate.
+local CaseRoller
+pcall(function() CaseRoller = require(ReplicatedStorage.Modules.CaseRoller) end)
+
+local FLOAT_MULT_EXPECTED = 0.47
+local evBaseCache = {} -- [case name] = expected item Base per roll
+
+local function crateProfitable(case)
+    if not CaseRoller then
+        return true -- odds unavailable: never skip on a guess
+    end
+    if not case then
+        return false
+    end
+    local priceChild = case:FindFirstChild("Price")
+    local price = priceChild and priceChild:IsA("NumberValue") and priceChild.Value or math.huge
+    if price <= 0 then
+        return true -- free crates are always fine
+    end
+    local evBase = evBaseCache[case.Name]
+    if evBase == nil then
+        evBase = 0
+        for _, item in ipairs(case.Items:GetChildren()) do
+            local okP, p = pcall(function() return CaseRoller.GetItemBaseProbability(case, item) end)
+            local weapon = Weapons:FindFirstChild(item.Name)
+            local base = weapon and weapon:FindFirstChild("Base") and weapon.Base.Value or 0
+            evBase += (type(p) == "number" and p or 0) * base
+        end
+        evBaseCache[case.Name] = evBase
+    end
+    return evBase * FLOAT_MULT_EXPECTED > price
+end
+
 -- One tick per delay: every selected case fires its roll (in price
 -- order), then the loop sleeps. Nothing is sent unless the main toggle
 -- is on; the amount is the slider value (the same field the game's own
@@ -367,10 +405,13 @@ task.spawn(function()
                     for i = #levelCrates, 1, -1 do
                         local row = levelCrates[i]
                         if row.level <= best.level then
-                            local use = affordableAmount(row.name, amount)
-                            if use then
-                                pickName, pickAmount = row.name, use
-                                break
+                            local case = Cases:FindFirstChild(row.name)
+                            if crateProfitable(case) then
+                                local use = affordableAmount(row.name, amount)
+                                if use then
+                                    pickName, pickAmount = row.name, use
+                                    break
+                                end
                             end
                         end
                     end
