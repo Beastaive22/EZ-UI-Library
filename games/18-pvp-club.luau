@@ -70,6 +70,10 @@ if not (Attack and Block and Sprint) then
 	return
 end
 
+-- (building support — BuildingAction / MinecraftBuildLimits / DuelRules — is
+--  required inside the build-assist block further down, to stay under Luau's
+--  200-local limit for this file's main chunk)
+
 local G = getgenv()
 if G.PvpClubTool and G.PvpClubTool.Unload then
 	pcall(G.PvpClubTool.Unload)
@@ -108,8 +112,14 @@ local cfg = {
 	appleSlot = 3,           -- hotbar slot of the golden apple (fallback scans all slots)
 	swordSlot = 8,           -- hotbar slot of the sword for re-equip after eating
 	pickaxeSlot = 5,         -- hotbar slot of the diamond pickaxe (mining)
-	cobbleSlot = 4,          -- hotbar slot of cobblestone (building experiments)
-	buildMode = false,       -- EXPERIMENTAL: pillar-up with placed blocks when targets are above
+	cobbleSlot = 4,          -- hotbar slot of cobblestone (building)
+	buildMode = false,       -- auto-climb: build a step toward targets above you, then jump
+	autoBridge = false,      -- place supported blocks ahead while you move (AutoBridge/Scaffold)
+	bridgeSmart = true,      -- only build when the path ahead is blocked / uneven / a drop
+	bridgeRateMs = 400,      -- min ms between assisted placements
+	safeWalk = false,        -- never walk off a ledge (position clamp at the edge)
+	voidWalk = false,        -- auto-save when falling into the void / lava (rescue teleport)
+	voidLiftPower = 4,       -- VoidWalk rescue drop height above the last safe spot (studs)
 	includeNPC = true,
 	scoring = "nearest",     -- nearest | lowestHP | angle
 	aimHeight = 1.5,
@@ -2520,79 +2530,353 @@ stuckMineHook = function(char, hrp, dir)
 	end, { item = "sword", scan = true })
 end
 
--- building experiment: pillar up when the target is above us ------------------------
--- (grid placement: look straight down, jump, place into the feet cell)
-pillarHook = function(char, hrp, thrp)
-	if not cfg.buildMode then
-		return
-	end
-	local t = os.clock()
-	if t - (moveState.lastPillarTry or 0) < 0.75 then
-		return
-	end
-	if t < (moveState.pillarPauseUntil or 0) then
-		return
-	end
-	if char:GetAttribute("MinecraftGrounded") == false then
-		return
-	end
-	local targetRoot = thrp
-	local above = targetRoot.Position.Y - hrp.Position.Y
-	local flat = (targetRoot.Position - hrp.Position) * Vector3.new(1, 0, 1)
-	-- engage whenever the target is meaningfully above us and roughly overhead
-	if above < 3.6 or flat.Magnitude > 9 or flat.Magnitude < 1 then
-		return
-	end
-	if not equipSlot(cfg.cobbleSlot, function(n)
-		return string.find(string.lower(n), "cobblestone", 1, true) ~= nil
-	end, { item = "cobblestone", scan = true }) then
-		-- no cobblestone at all: don't hammer the inventory on every tick
-		moveState.pillarPauseUntil = t + 5
-		return
-	end
-	moveState.lastPillarTry = t
-	-- grid placement, MC-style: look STRAIGHT DOWN at the block under our feet,
-	-- jump, place while airborne -> the block goes into our own feet cell
-	aim.target = nil
-	aim.pos = hrp.Position - Vector3.new(0, 4.6, 0)
-	local pb = workspace:FindFirstChild("PlayerBlocks")
-	local before = pb and #pb:GetChildren() or 0
-	inputJump()
-	local deadline = os.clock() + 0.35
-	while os.clock() < deadline do
-		local c = LocalPlayer.Character
-		if c and c:GetAttribute("MinecraftGrounded") == false then
-			break
+-- build assist: AutoBridge steps, SafeWalk, VoidWalk --------------------------------
+-- Verified live against MinecraftBuildingClient + MinecraftBlockPlacement (v354):
+--   * a placement is BuildingAction:FireServer("Place", dir, id, cell, head, time)
+--     and the server re-runs the client's own rule: the ray from the HEAD along
+--     `dir` must hit a face whose FromHit snap equals `cell` — blocks only attach
+--     to existing blocks/terrain (never the sky), within ~6 studs of the head.
+--   * FromHit(hit) = Snap(hit.Position + hit.Normal*0.05); Snap(v)=(floor(v/3.2)+0.5)*3.2
+--   * cobblestone must be EQUIPPED (Count > 0); the server decrements it.
+--   * the cell under your feet is ~7 studs below the head -> out of reach: this
+--     game has no pillar and no block-clutch. SafeWalk pins you at the edge;
+--     VoidWalk saves with a rescue teleport; AutoBridge places steps/walls ahead.
+-- The whole assist lives in its own function: the file's main chunk is already at
+-- Luau's 200-local limit, so none of these may be file-scope locals.
+local buildAssist = (function()
+	local BuildingAction = RS:WaitForChild("BuildingAction", 5)
+	local okBuildLimits, BuildLimits = pcall(function()
+		return require(RS:WaitForChild("MinecraftBuildLimits", 10))
+	end)
+	local okDuelRules, DuelRules = pcall(function()
+		return require(RS:WaitForChild("DuelRules", 10))
+	end)
+	local BUILD_CELL = 3.2
+	local BUILD_HALF = 1.6
+	local BUILD_REACH = 6.0
+	local BUILD_NORMALS = {
+		Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
+		Vector3.new(0, 1, 0), Vector3.new(0, -1, 0),
+		Vector3.new(0, 0, 1), Vector3.new(0, 0, -1),
+	}
+	local build = { lastAt = 0, id = 0, failUntil = 0, equipping = false, lastStepAt = 0 }
+	local buildRayCache = { char = nil, rp = nil, at = 0 }
+
+	local function buildRayParams(char)
+		local t = os.clock()
+		if buildRayCache.rp == nil or buildRayCache.char ~= char or t - buildRayCache.at > 0.5 then
+			local rp = RaycastParams.new()
+			rp.FilterType = Enum.RaycastFilterType.Exclude
+			rp.FilterDescendantsInstances = { char, workspace:FindFirstChild("PredictedBlocks") }
+			rp.RespectCanCollide = true
+			buildRayCache.rp = rp
+			buildRayCache.char = char
+			buildRayCache.at = t
 		end
-		task.wait(0.03)
+		return buildRayCache.rp
 	end
-	task.wait(0.1)
-	pcall(function()
-		mouse2press()
-	end)
-	task.wait(0.12)
-	pcall(function()
-		mouse2release()
-	end)
-	aim.pos = nil
-	-- verify a block actually appeared; two silent failures = pause the pillar
-	task.wait(0.22)
-	if pb then
-		local after = #pb:GetChildren()
-		if after <= before then
-			moveState.pillarFail = (moveState.pillarFail or 0) + 1
-			if moveState.pillarFail >= 2 then
-				moveState.pillarFail = 0
-				moveState.pillarPauseUntil = t + 4
+
+	local function buildSnap(v)
+		return (math.floor(v / BUILD_CELL) + 0.5) * BUILD_CELL
+	end
+
+	local function buildCellOf(pos)
+		return Vector3.new(buildSnap(pos.X), buildSnap(pos.Y), buildSnap(pos.Z))
+	end
+
+	local function buildCellSolid(cell, char)
+		local op = OverlapParams.new()
+		op.FilterType = Enum.RaycastFilterType.Exclude
+		op.FilterDescendantsInstances = { char }
+		for _, part in ipairs(workspace:GetPartBoundsInBox(CFrame.new(cell), Vector3.new(3.05, 3.05, 3.05), op)) do
+			if part.CanCollide then
+				return true
 			end
-		else
-			moveState.pillarFail = 0
+		end
+		return false
+	end
+
+	-- the `dir` the server's ray rule accepts for `cell`: a face of an existing part
+	-- must be visible from the head and its FromHit snap must be `cell`
+	local function buildDirFor(cell, char, head)
+		local rp = buildRayParams(char)
+		for _, n in ipairs(BUILD_NORMALS) do
+			local neighbor = cell - n * BUILD_CELL
+			if buildCellSolid(neighbor, char) then
+				local face = cell - n * BUILD_HALF
+				local hit = workspace:Raycast(head.Position, face - head.Position, rp)
+				if hit and hit.Normal:Dot(n) > 0.9 and (hit.Position - face).Magnitude < 1.0 then
+					return (face - n * 0.015 - head.Position).Unit
+				end
+			end
+		end
+		return nil
+	end
+
+	-- equip cobblestone without parking the caller (the equip scan yields)
+	local function buildEnsureCobble()
+		if string.find(string.lower(toolNameNow()), "cobblestone", 1, true) then
+			return true
+		end
+		if build.equipping then
+			return false
+		end
+		build.equipping = true
+		task.spawn(function()
+			local ok = equipSlot(cfg.cobbleSlot, function(n)
+				return string.find(string.lower(n), "cobblestone", 1, true) ~= nil
+			end, { item = "cobblestone", scan = true })
+			build.equipping = false
+			if not ok then
+				build.failUntil = os.clock() + 6
+			end
+		end)
+		return false
+	end
+
+	-- fire one verified placement; true when the request went out
+	local function buildPlaceCell(cell, char, hrp, head)
+		local t = os.clock()
+		if t < build.failUntil or t - build.lastAt < cfg.bridgeRateMs / 1000 then
+			return false
+		end
+		if (cell - head.Position).Magnitude > BUILD_REACH then
+			return false
+		end
+		if math.abs(cell.X - hrp.Position.X) < 2.6 and math.abs(cell.Z - hrp.Position.Z) < 2.6 then
+			return false -- would spawn inside our own body (the server rejects those)
+		end
+		if buildCellSolid(cell, char) then
+			return false
+		end
+		if BuildLimits and not BuildLimits.CanPlace(cell) then
+			return false
+		end
+		if DuelRules and DuelRules.CanBuild and not DuelRules.CanBuild(char, cell) then
+			return false
+		end
+		local dir = buildDirFor(cell, char, head)
+		if not dir or not buildEnsureCobble() then
+			return false
+		end
+		build.lastAt = t
+		moveState.lastBuildAt = t
+		build.id += 1
+		local id = build.id
+		pcall(function()
+			BuildingAction:FireServer("Place", dir, id, cell, head.Position, workspace:GetServerTimeNow())
+		end)
+		traceEvent(string.format("build:place (%.1f,%.1f,%.1f) d=%.2f", cell.X, cell.Y, cell.Z, (cell - head.Position).Magnitude), 0.2)
+		return true
+	end
+
+	-- the cell a supported step goes in: on top of the surface under `dirFlat`
+	-- (one cell ahead); nil when there is nothing to attach the block to
+	local function buildStepCell(hrp, dirFlat)
+		local cur = buildCellOf(hrp.Position)
+		local ahead = Vector3.new(cur.X, 0, cur.Z) + dirFlat * BUILD_CELL
+		local rp = buildRayParams(LocalPlayer.Character)
+		local hit = workspace:Raycast(Vector3.new(ahead.X, hrp.Position.Y + 8, ahead.Z), Vector3.new(0, -46, 0), rp)
+		if not hit or isHazardName(hit.Instance.Name) then
+			return nil
+		end
+		return Vector3.new(ahead.X, buildSnap(hit.Position.Y + 0.05), ahead.Z), hit.Position.Y
+	end
+
+	-- AutoBridge: while you move, keep a supported step/wall in front (scaffold-style)
+	local function autoBridgeStep(char, hum, hrp, t)
+		if not cfg.autoBridge then
+			return
+		end
+		local md = hum.MoveDirection
+		local flat = Vector3.new(md.X, 0, md.Z)
+		if flat.Magnitude < 0.25 then
+			return
+		end
+		flat = flat.Unit
+		local head = char:FindFirstChild("Head")
+		if not head then
+			return
+		end
+		local cell, surfaceY = buildStepCell(hrp, flat)
+		if not cell then
+			return
+		end
+		if cfg.bridgeSmart then
+			local feet = hrp.Position.Y - 4
+			if math.abs(surfaceY - feet) < 0.6 then
+				-- level ground ahead: only build when something blocks the path
+				local rp = buildRayParams(char)
+				local ob = workspace:Raycast(hrp.Position + Vector3.new(0, 0.4, 0) + flat * 1.3, flat * 2.2, rp)
+				if not ob then
+					return
+				end
+			end
+		end
+		if buildPlaceCell(cell, char, hrp, head) then
+			-- hop onto the new step shortly after it lands
+			if t - build.lastStepAt > 0.35 and char:GetAttribute("MinecraftGrounded") ~= false then
+				build.lastStepAt = t
+				task.delay(0.22, function()
+					local c = LocalPlayer.Character
+					if c and c:GetAttribute("MinecraftGrounded") ~= false then
+						inputJump()
+					end
+				end)
+			end
 		end
 	end
-	equipSlot(cfg.swordSlot, function(n)
-		return string.find(string.lower(n), "sword", 1, true) ~= nil
-	end, { item = "sword", scan = true })
-end
+
+	-- auto-climb (the old "pillar"): target above us -> a step toward them + jump.
+	-- One step is all this game's reach allows from any standing surface.
+	pillarHook = function(char, hrp, thrp)
+		if not cfg.buildMode then
+			return
+		end
+		local t = os.clock()
+		if t - (moveState.lastPillarTry or 0) < 0.8 or t < (moveState.pillarPauseUntil or 0) then
+			return
+		end
+		if char:GetAttribute("MinecraftGrounded") == false then
+			return
+		end
+		local head = char:FindFirstChild("Head")
+		if not head then
+			return
+		end
+		local flat = flatDir(hrp.Position, thrp.Position)
+		if not flat then
+			return
+		end
+		local cell = buildStepCell(hrp, flat)
+		if not cell then
+			return
+		end
+		moveState.lastPillarTry = t
+		if buildPlaceCell(cell, char, hrp, head) then
+			task.delay(0.25, function()
+				local c = LocalPlayer.Character
+				if c and c:GetAttribute("MinecraftGrounded") ~= false then
+					inputJump()
+				end
+			end)
+		end
+	end
+
+	-- SafeWalk: never walk off a ledge. The game pins client velocity writes (its
+	-- own controller re-simulates every frame), so the stop is a position clamp:
+	-- while you push toward a drop/void within a stud of the lip, the character
+	-- is pulled back a fraction of a stud per frame — you stand at the edge
+	-- instead of walking off. Jumping (airborne) is never clamped.
+	local function safeWalkStep(char, hum, hrp, t)
+		if not cfg.safeWalk or moveState.engaged then
+			return -- the tool's own movement (travel/chase) navigates hazards itself
+		end
+		if char:GetAttribute("MinecraftGrounded") == false then
+			return
+		end
+		local md = hum.MoveDirection
+		local flat = Vector3.new(md.X, 0, md.Z)
+		if flat.Magnitude < 0.05 then
+			return
+		end
+		flat = flat.Unit
+		local rp = envParams(char)
+		for _, d in ipairs({ 0.8, 1.4 }) do
+			local hit = workspace:Raycast(hrp.Position + Vector3.new(0, 2.5, 0) + flat * d, Vector3.new(0, -34, 0), rp)
+			if not hit or isHazardName(hit.Instance.Name) or hit.Position.Y < hrp.Position.Y - 4 - 4.2 then
+				hrp.CFrame = hrp.CFrame - flat * 0.3
+				traceEvent("safewalk:pull", 0.4, "safewalk")
+				return
+			end
+		end
+	end
+
+	-- VoidWalk: falling toward the void / lava -> rise back toward the last safe spot
+	local voidState = { active = false, untilAt = 0, lastAt = 0 }
+	local function voidWalkStep(char, hum, hrp, t)
+		if not cfg.voidWalk then
+			voidState.active = false
+			return
+		end
+		if char:GetAttribute("MinecraftGrounded") ~= false then
+			voidState.active = false
+			return
+		end
+		if not voidState.active then
+			if hrp.AssemblyLinearVelocity.Y > -8 then
+				return
+			end
+			local rp = envParams(char)
+			local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -90, 0), rp)
+			if hit and not isHazardName(hit.Instance.Name) then
+				return
+			end
+			if t - voidState.lastAt < 1.5 then
+				return
+			end
+			voidState.active = true
+			voidState.lastAt = t
+			voidState.untilAt = t + 1.5
+			traceEvent("void:save on", 0.5, "void")
+		end
+		if t > voidState.untilAt then
+			voidState.active = false
+			return
+		end
+		local safe = moveState.lastSafePos
+		if safe then
+			-- the game pins client velocity writes (its air controller re-simulates
+			-- every frame) but position writes hold — so the save is a one-shot
+			-- teleport back to the last verified safe spot, dropped in from above
+			hrp.CFrame = CFrame.new(safe + Vector3.new(0, cfg.voidLiftPower, 0))
+			traceEvent("void:teleport", 0.5, "void")
+		end
+		voidState.active = false
+	end
+
+	-- one assist heartbeat: safe-ground bookmark + the three features
+	table.insert(conns, RunService.Heartbeat:Connect(function()
+		local t = os.clock()
+		local char = LocalPlayer.Character
+		if not char or not char.Parent then
+			return
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not hum or not hrp or hum.Health <= 0 then
+			return
+		end
+		if char:GetAttribute("MinecraftGrounded") ~= false and t - (moveState.lastSafeAt or 0) > 0.3 then
+			local inst = probeGroundAt(hrp.Position, Vector3.zero, 0)
+			if inst and not isHazardName(inst.Name) then
+				moveState.lastSafeAt = t
+				moveState.lastSafePos = hrp.Position
+			end
+		end
+		local ok, err = pcall(function()
+			voidWalkStep(char, hum, hrp, t)
+			if game:GetService("GuiService").MenuIsOpen or UserInputService:GetFocusedTextBox() ~= nil then
+				return
+			end
+			safeWalkStep(char, hum, hrp, t)
+			autoBridgeStep(char, hum, hrp, t)
+		end)
+		if not ok then
+			local d = G.PvpClubToolDebug
+			if d then
+				d.buildErr = tostring(err)
+			end
+		end
+	end))
+
+	return {
+		bridge = autoBridgeStep,
+		safeWalk = safeWalkStep,
+		void = voidWalkStep,
+		state = build,
+	}
+end)()
 
 local function releaseMovement()
 	nav.active = false
@@ -2714,8 +2998,10 @@ local function trySwordReequip(t)
 	if reequipState.busy or t - reequipState.at < 1.5 then
 		return
 	end
-	-- don't fight the pillar/mining routines for the hotbar
-	if t - (moveState.lastPillarTry or 0) < 1.5 or t - (moveState.lastMineTry or 0) < 1.5 then
+	-- don't fight the build/mining routines for the hotbar
+	if t - (moveState.lastPillarTry or 0) < 1.5 or t - (moveState.lastMineTry or 0) < 1.5
+		or t - (moveState.lastBuildAt or 0) < 1.2
+	then
 		return
 	end
 	reequipState.at = t
@@ -3593,6 +3879,12 @@ local function saveConfig()
 			autoEat = cfg.autoEat,
 			eatHpThreshold = cfg.eatHpThreshold,
 			buildMode = cfg.buildMode,
+			autoBridge = cfg.autoBridge,
+			bridgeSmart = cfg.bridgeSmart,
+			bridgeRateMs = cfg.bridgeRateMs,
+			safeWalk = cfg.safeWalk,
+			voidWalk = cfg.voidWalk,
+			voidLiftPower = cfg.voidLiftPower,
 			includeNPC = cfg.includeNPC,
 			scoring = cfg.scoring,
 			aimSpeed = cfg.aimSpeed,
@@ -3625,6 +3917,89 @@ local ui = { EZ = nil, window = nil, handles = {} }
 
 local SCORING_LABEL = { nearest = "Nearest", lowestHP = "Lowest HP", angle = "Angle" }
 local SCORING_VALUE = { Nearest = "nearest", ["Lowest HP"] = "lowestHP", Angle = "angle" }
+
+-- building tab lives in its own function: buildUI is already at Luau's 200-local
+-- register limit, and this block would tip it over
+local function buildBuildingSections(buildingTab)
+	local secBuild = buildingTab:AddSection("AutoBridge / Scaffold")
+	secBuild:AddToggle("AutoBridge", {
+		Text = "AutoBridge — place blocks ahead as you move",
+		Default = cfg.autoBridge,
+		Tooltip = "While you move it places cobblestone in the next cell — a step / wall you can jump onto. The game only allows blocks attached to existing blocks (never floating, never under your feet), so this builds steps and cover, not a bridge over the void.",
+		Callback = function(v)
+			cfg.autoBridge = v == true
+			markDirty()
+		end,
+	})
+	secBuild:AddSlider("BridgeRate", {
+		Text = "Build cadence",
+		Min = 200,
+		Max = 1000,
+		Default = cfg.bridgeRateMs,
+		Increment = 50,
+		Suffix = " ms",
+		Tooltip = "Minimum time between assisted placements. Keep it human (400 ms ≈ 2.5 blocks/s).",
+		VisibleWhen = "AutoBridge",
+		Callback = function(v)
+			cfg.bridgeRateMs = v
+			markDirty()
+		end,
+	})
+	secBuild:AddToggle("BridgeSmart", {
+		Text = "Only when blocked or the ground is uneven",
+		Default = cfg.bridgeSmart,
+		Tooltip = "On: builds only when something blocks your path or the ground ahead is not level. Off: builds a step every cell you walk (continuous scaffold climb).",
+		VisibleWhen = "AutoBridge",
+		Callback = function(v)
+			cfg.bridgeSmart = v == true
+			markDirty()
+		end,
+	})
+	secBuild:AddLabel("Blocks can only be placed against existing blocks (the server rejects floating cells) and never under your feet — that is the game's own rule.")
+	secBuild = buildingTab:AddSection("Climbing")
+	secBuild:AddToggle("AuraBuildMode", {
+		Text = "Auto-climb to targets above you",
+		Default = cfg.buildMode,
+		Tooltip = "When your target is above you it places a step toward them and jumps onto it. One step is all the game's build reach allows from flat ground.",
+		Callback = function(v)
+			cfg.buildMode = v == true
+			markDirty()
+		end,
+	})
+	secBuild:AddLabel("Mining: when stuck, it breaks player-placed blocks ahead with the pickaxe.")
+	secBuild = buildingTab:AddSection("SafeWalk / VoidWalk")
+	secBuild:AddToggle("SafeWalk", {
+		Text = "SafeWalk — never walk off a ledge",
+		Default = cfg.safeWalk,
+		Tooltip = "Stops you at the edge instead of walking off (you can still jump off deliberately).",
+		Callback = function(v)
+			cfg.safeWalk = v == true
+			markDirty()
+		end,
+	})
+	secBuild:AddToggle("VoidWalk", {
+		Text = "VoidWalk — auto-save from void / lava falls",
+		Default = cfg.voidWalk,
+		Tooltip = "When you fall toward the void or lava it teleports you back to the last safe spot. Blocks cannot save a fall in this game (they cannot be placed under your feet), so the save is a rescue teleport.",
+		Callback = function(v)
+			cfg.voidWalk = v == true
+			markDirty()
+		end,
+	})
+	secBuild:AddSlider("VoidLiftPower", {
+		Text = "Rescue drop height",
+		Min = 2,
+		Max = 10,
+		Default = cfg.voidLiftPower,
+		Increment = 1,
+		Suffix = " studs",
+		VisibleWhen = "VoidWalk",
+		Callback = function(v)
+			cfg.voidLiftPower = v
+			markDirty()
+		end,
+	})
+end
 
 local function buildUI()
 	local okLib, lib = pcall(function()
@@ -4011,17 +4386,7 @@ local function buildUI()
 	})
 
 	local buildingTab = Window:AddTab("Building", "hammer")
-	local secBuild = buildingTab:AddSection("Building (experimental)")
-	secBuild:AddToggle("AuraBuildMode", {
-		Text = "Pillar up to targets above you",
-		Default = cfg.buildMode,
-		Tooltip = "EXPERIMENT: when a target is above you on a structure, it places cobblestone below itself and jumps to climb. Watch it before trusting it.",
-		Callback = function(v)
-			cfg.buildMode = v == true
-			markDirty()
-		end,
-	})
-	secBuild:AddLabel("Mining: when stuck, it breaks player-placed blocks ahead with the pickaxe.")
+	buildBuildingSections(buildingTab)
 
 	local statsTab = Window:AddTab("Stats", "activity")
 	local secLive = statsTab:AddSection("Live telemetry")

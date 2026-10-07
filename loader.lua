@@ -129,6 +129,16 @@ local GAMES = {
 		universes = { 10141042381 },              -- Case Haven
 		places = { 86942234200714 },              -- main
 	},
+	{
+		slug = "moo-survival", name = "MOO Survival", note = "farm + heal + combat auras",
+		universes = { 10769210355 },              -- Cardinal Cat Studios
+		places = { 84010133451173 },              -- main (early access)
+	},
+	{
+		slug = "1-kill-1-armor", name = "1 Kill = 1 Armor!", note = "TP-behind kill farm",
+		universes = { 8798246146 },               -- 1 Kill = 1 Armor!
+		places = { 132547252102193 },             -- main
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}

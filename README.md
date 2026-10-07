@@ -30,7 +30,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/Beastaive22/EZ-UI-Lib
 
 Supported so far: Total Conquest, Counter Type, Slam A Winner, Project 12,
 Bloxburg, Starforged, Cellular.io, Call of Mini Zombies 2, Survivor Games,
-Final Swarm, 1.8 PVP Club and Case Haven — see
+Final Swarm, 1.8 PVP Club, Case Haven, MOO Survival and 1 Kill = 1 Armor! — see
 [`games/`](games). In any other place it opens a small window listing what the
 hub carries instead of failing silently.
 
