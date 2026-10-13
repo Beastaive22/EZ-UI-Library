@@ -50,7 +50,7 @@ local TribeWorld = workspace:WaitForChild("TribeWorld")
 local ResourceNodes = TribeWorld:WaitForChild("ResourceNodes")
 
 local SWING_GATE = 0.46
-local HEAL_GATE = 0.6
+local HEAL_GATE = 0.2
 local SPIKE_GATE = 0.3
 local EQUIP_GATE = 0.4
 local SPIKE_WOOD = 20
@@ -435,7 +435,7 @@ RunService:BindToRenderStep("MooCombatAuras", Enum.RenderPriority.Camera.Value +
 
 task.spawn(function()
 	while uiAlive and engineGen == G.MooEngineGen do
-		task.wait(0.2)
+		task.wait(0.05)
 		if cfg.heal then
 			local c, h = alive()
 			if c and h and h.Health < h.MaxHealth and (LocalPlayer:GetAttribute("Food") or 0) >= 10 then
