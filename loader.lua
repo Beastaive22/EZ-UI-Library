@@ -139,6 +139,16 @@ local GAMES = {
 		universes = { 8798246146 },               -- 1 Kill = 1 Armor!
 		places = { 132547252102193 },             -- main
 	},
+	{
+		slug = "fight-park", name = "Fight Park", note = "court gem farm + alt fleet",
+		universes = { 2124320492 },               -- IAmTheRolo's Projects
+		places = { 5922311258 },                  -- Fight Park
+	},
+	{
+		slug = "piano-rhythm-tiles", name = "Piano Rhythm Tiles", note = "perfect autoplay",
+		universes = { 10766845655 },              -- Music Tiles
+		places = { 101999883467300 },
+	},
 }
 
 local BY_PLACE, BY_GAME = {}, {}
